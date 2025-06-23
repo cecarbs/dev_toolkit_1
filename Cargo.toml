@@ -1,0 +1,29 @@
+[package]
+name = "tui_one"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Terminal UI and input handling
+ratatui = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
+
+# Async runtime and utilities
+tokio = { version = "1.0", features = ["full"] }
+tokio-util = "0.7"
+
+# Serialization for templates and config
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Browser automation (you'll implement the logic)
+headless_chrome = "1.0"
+
+# Logging
+log = "0.4"
+
+# Error handling
+anyhow = "1.0"
+
+# Date/time for log timestamps
+chrono = { version = "0.4", features = ["serde"] }
