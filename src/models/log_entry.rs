@@ -29,11 +29,11 @@ impl LogLevel {
     /// Get the display string for the log level
     pub fn as_str(&self) -> &'static str {
         match self {
-            LogLevel::Debug => "DEBUG",
-            LogLevel::Info => "INFO",
-            LogLevel::Warn => "WARN",
-            LogLevel::Error => "ERROR",
-            LogLevel::Success => "SUCCESS",
+            LogLevel::Debug => "[DEBUG]",
+            LogLevel::Info => "[INFO]",
+            LogLevel::Warn => "[WARN]",
+            LogLevel::Error => "[ERROR]",
+            LogLevel::Success => "[SUCCESS]",
         }
     }
 }
