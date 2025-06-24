@@ -1,4 +1,4 @@
-use crate::models::{AppConfig, LogEntry, LogLevel, TreeState};
+use crate::models::{AppConfig, LogEntry, LogLevel, NodeType, TreeState};
 use crate::modes::automation::AutomationState;
 use crate::services::{AuthService, TemplateStorage};
 use anyhow::Result;
@@ -84,6 +84,19 @@ pub struct App {
 
     /// Channel for sending messages to background tasks
     pub message_sender: mpsc::UnboundedSender<AppMessage>,
+
+    /// Template creation dialog state
+    pub show_template_dialog: bool,
+    pub template_dialog_name: String,
+    pub template_dialog_folder: String,
+    pub template_dialog_description: String,
+    pub template_dialog_focused_field: usize, // 0=name, 1=folder, 2=description
+
+    /// Folder creation dialog state
+    pub show_folder_dialog: bool,
+    pub folder_dialog_name: String,
+    pub folder_dialog_parent: String,
+    pub folder_dialog_error: Option<String>,
 }
 
 impl App {
@@ -126,6 +139,15 @@ impl App {
             should_quit: false,
             message_receiver: Arc::new(Mutex::new(message_receiver)),
             message_sender,
+            show_template_dialog: false,
+            template_dialog_name: String::new(),
+            template_dialog_folder: String::new(),
+            template_dialog_description: String::new(),
+            template_dialog_focused_field: 0,
+            show_folder_dialog: false,
+            folder_dialog_name: String::new(),
+            folder_dialog_parent: String::new(),
+            folder_dialog_error: None,
         };
 
         // Log initial startup message
@@ -517,6 +539,214 @@ impl App {
             format!("Deleted template: {}", template_name),
         );
         self.refresh_tree_from_storage().await?;
+        Ok(())
+    }
+
+    /// Show the template creation dialog
+    pub fn show_template_creation_dialog(&mut self) {
+        // Pre-populate with smart defaults
+        let focused_folder = if let Some(focused_node) = self.tree_state.get_focused_node() {
+            match focused_node.node_type {
+                NodeType::Folder => focused_node.path.clone(),
+                NodeType::Template => {
+                    // Get parent folder
+                    if let Some(parent_pos) = focused_node.path.rfind('/') {
+                        focused_node.path[..parent_pos].to_string()
+                    } else {
+                        "".to_string()
+                    }
+                }
+            }
+        } else {
+            "".to_string()
+        };
+
+        self.show_template_dialog = true;
+        self.template_dialog_name = "New Template".to_string();
+        self.template_dialog_folder = focused_folder;
+        self.template_dialog_description = "Template created from form".to_string();
+        self.template_dialog_focused_field = 0;
+
+        self.log(LogLevel::Debug, "Template creation dialog opened");
+    }
+
+    /// Hide the template creation dialog
+    pub fn hide_template_creation_dialog(&mut self) {
+        self.show_template_dialog = false;
+        self.template_dialog_name.clear();
+        self.template_dialog_folder.clear();
+        self.template_dialog_description.clear();
+        self.template_dialog_focused_field = 0;
+
+        self.log(LogLevel::Debug, "Template creation dialog closed");
+    }
+
+    /// Create template with dialog values
+    pub async fn create_template_from_dialog(&mut self) -> Result<()> {
+        if self.template_dialog_name.trim().is_empty() {
+            self.log(LogLevel::Error, "Template name cannot be empty");
+            return Ok(());
+        }
+
+        use crate::models::AutomationTemplate;
+
+        // Create template from current form values
+        let mut template = AutomationTemplate::new(
+            &self.template_dialog_name,
+            &self.template_dialog_description,
+        );
+
+        // Add current field values to template
+        for field in &self.automation_state.fields {
+            if !field.value.is_empty() {
+                template = template.with_field(&field.name, &field.value);
+            }
+        }
+
+        // Save to storage
+        match self.template_storage.save_template(
+            &self.template_dialog_folder,
+            &self.template_dialog_name,
+            template,
+        ) {
+            Ok(_) => {
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Created template '{}' in folder '{}'",
+                        self.template_dialog_name,
+                        if self.template_dialog_folder.is_empty() {
+                            "Root"
+                        } else {
+                            &self.template_dialog_folder
+                        }
+                    ),
+                );
+
+                // Refresh tree and hide dialog
+                self.refresh_tree_from_storage().await?;
+                self.hide_template_creation_dialog();
+                Ok(())
+            }
+            Err(e) => {
+                self.log(LogLevel::Error, format!("Failed to save template: {}", e));
+                Err(e)
+            }
+        }
+    }
+
+    pub fn show_folder_creation_dialog(&mut self) {
+        // Pre-populate with smart defaults based on focused node
+        let parent_folder = if let Some(focused_node) = self.tree_state.get_focused_node() {
+            match focused_node.node_type {
+                NodeType::Folder => focused_node.path.clone(),
+                NodeType::Template => {
+                    // Get parent folder of the template
+                    if let Some(parent_pos) = focused_node.path.rfind('/') {
+                        focused_node.path[..parent_pos].to_string()
+                    } else {
+                        "".to_string()
+                    }
+                }
+            }
+        } else {
+            "".to_string()
+        };
+
+        self.show_folder_dialog = true;
+        self.folder_dialog_name = String::new();
+        self.folder_dialog_parent = parent_folder;
+        self.folder_dialog_error = None;
+
+        self.log(LogLevel::Debug, "Folder creation dialog opened");
+    }
+
+    /// Hide the folder creation dialog
+    pub fn hide_folder_creation_dialog(&mut self) {
+        self.show_folder_dialog = false;
+        self.folder_dialog_name.clear();
+        self.folder_dialog_parent.clear();
+        self.folder_dialog_error = None;
+
+        self.log(LogLevel::Debug, "Folder creation dialog closed");
+    }
+
+    /// Create folder with dialog values
+    pub async fn create_folder_from_dialog(&mut self) -> Result<()> {
+        // Validate folder name
+        if let Err(error) =
+            self.validate_folder_name(&self.folder_dialog_name, &self.folder_dialog_parent)
+        {
+            self.folder_dialog_error = Some(error);
+            return Ok(());
+        }
+
+        // Create the full folder path
+        let full_path = if self.folder_dialog_parent.is_empty() {
+            self.folder_dialog_name.clone()
+        } else {
+            format!("{}/{}", self.folder_dialog_parent, self.folder_dialog_name)
+        };
+
+        // Create the folder on disk
+        let templates_dir = self.config.get_templates_directory();
+        let folder_path = templates_dir.join(&full_path);
+
+        match std::fs::create_dir_all(&folder_path) {
+            Ok(()) => {
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Created folder: {}",
+                        if full_path.is_empty() {
+                            "Root"
+                        } else {
+                            &full_path
+                        }
+                    ),
+                );
+
+                // Refresh tree and hide dialog
+                self.refresh_tree_from_storage().await?;
+                self.hide_folder_creation_dialog();
+                Ok(())
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to create folder: {}", e);
+                self.folder_dialog_error = Some(error_msg.clone());
+                self.log(LogLevel::Error, error_msg);
+                Ok(())
+            }
+        }
+    }
+
+    /// Validate folder name and path
+    fn validate_folder_name(&self, name: &str, parent: &str) -> Result<(), String> {
+        // Check if name is empty
+        if name.trim().is_empty() {
+            return Err("Folder name cannot be empty".to_string());
+        }
+
+        // Check for invalid characters
+        let invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+        if name.chars().any(|c| invalid_chars.contains(&c)) {
+            return Err("Folder name contains invalid characters".to_string());
+        }
+
+        // Check if folder already exists
+        let full_path = if parent.is_empty() {
+            name.to_string()
+        } else {
+            format!("{}/{}", parent, name)
+        };
+
+        let templates_dir = self.config.get_templates_directory();
+        let folder_path = templates_dir.join(&full_path);
+
+        if folder_path.exists() {
+            return Err("Folder already exists".to_string());
+        }
+
         Ok(())
     }
 }
