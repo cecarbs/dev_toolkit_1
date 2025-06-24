@@ -1,6 +1,7 @@
 use crate::app::{App, AppMode, FocusedPane};
 use crate::ui::components::{
     render_automation_form, render_collections_tree, render_logging_panel, render_login_popup,
+    render_template_creation_dialog,
 };
 use ratatui::{
     Frame,
@@ -32,6 +33,9 @@ pub fn render_app(f: &mut Frame, app: &App) {
     // Render login popup if shown (modal overlay)
     if app.show_login_popup {
         render_login_popup(f, size, app);
+    }
+    if app.show_template_dialog {
+        render_template_creation_dialog(f, size, app);
     }
 }
 

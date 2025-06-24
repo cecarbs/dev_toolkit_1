@@ -5,6 +5,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Handle keyboard events and update app state accordingly
 pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    // Handle template creation dialog first if it's open
+    if app.show_template_dialog {
+        return handle_template_dialog_keys(app, key_event).await;
+    }
     // Global keybindings that work in all modes
     match key_event.code {
         // Quit application
@@ -53,6 +57,73 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
         FocusedPane::Collections => handle_tree_keys(app, key_event).await?,
         FocusedPane::Form => handle_form_keys(app, key_event).await?,
         FocusedPane::Logs => handle_log_keys(app, key_event).await?,
+    }
+
+    Ok(())
+}
+
+/// Handle keyboard events for the template creation dialog
+async fn handle_template_dialog_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Cancel dialog
+        KeyCode::Esc => {
+            app.hide_template_creation_dialog();
+        }
+
+        // Create template
+        KeyCode::Enter => {
+            if let Err(e) = app.create_template_from_dialog().await {
+                app.log(LogLevel::Error, format!("Failed to create template: {}", e));
+            }
+        }
+
+        // Navigate between fields
+        KeyCode::Tab => {
+            app.template_dialog_focused_field = (app.template_dialog_focused_field + 1) % 3;
+        }
+        KeyCode::BackTab => {
+            app.template_dialog_focused_field = if app.template_dialog_focused_field == 0 {
+                2
+            } else {
+                app.template_dialog_focused_field - 1
+            };
+        }
+
+        // Text input for focused field
+        KeyCode::Char(c) if key_event.modifiers.is_empty() => {
+            match app.template_dialog_focused_field {
+                0 => app.template_dialog_name.push(c),
+                1 => app.template_dialog_folder.push(c),
+                2 => app.template_dialog_description.push(c),
+                _ => {}
+            }
+        }
+
+        // Backspace for text editing
+        KeyCode::Backspace if key_event.modifiers.is_empty() => {
+            match app.template_dialog_focused_field {
+                0 => {
+                    app.template_dialog_name.pop();
+                }
+                1 => {
+                    app.template_dialog_folder.pop();
+                }
+                2 => {
+                    app.template_dialog_description.pop();
+                }
+                _ => {}
+            }
+        }
+
+        // Clear current field
+        KeyCode::Delete => match app.template_dialog_focused_field {
+            0 => app.template_dialog_name.clear(),
+            1 => app.template_dialog_folder.clear(),
+            2 => app.template_dialog_description.clear(),
+            _ => {}
+        },
+
+        _ => {}
     }
 
     Ok(())
@@ -128,15 +199,9 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             }
         }
 
-        // Create new template from current form
+        // Create new template from current form - Open dialog
         KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            // For now, save to root with timestamp name
-            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-            let template_name = format!("Template_{}", timestamp);
-
-            if let Err(e) = app.create_template_from_form("", &template_name).await {
-                app.log(LogLevel::Error, format!("Failed to create template: {}", e));
-            }
+            app.show_template_creation_dialog();
         }
 
         // Delete selected template/folder (with confirmation)
