@@ -1,5 +1,5 @@
-use crate::app::{App, AppMode};
-use crate::models::LogLevel;
+use crate::app::{App, AppMode, FocusedPane};
+use crate::models::{FocusDirection, LogLevel, NodeType};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -12,7 +12,7 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
             app.quit();
             return Ok(());
         }
-        // Toggle logging panel - Changed to F2 for Mac compatibility
+        // Toggle logging panel
         KeyCode::F(2) => {
             app.log(LogLevel::Debug, "F2 detected - toggling logs");
             app.toggle_logs();
@@ -27,20 +27,153 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
             app.switch_mode(AppMode::Http);
             return Ok(());
         }
+        // Focus switching
+        KeyCode::F(5) => {
+            app.focus_pane(FocusedPane::Collections);
+            app.log(LogLevel::Debug, "Focused collections tree");
+            return Ok(());
+        }
+        KeyCode::F(6) => {
+            app.focus_pane(FocusedPane::Form);
+            app.log(LogLevel::Debug, "Focused form");
+            return Ok(());
+        }
+        KeyCode::F(7) => {
+            if app.show_logs {
+                app.focus_pane(FocusedPane::Logs);
+                app.log(LogLevel::Debug, "Focused logs");
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
-    // Mode-specific event handling
-    match app.current_mode {
-        AppMode::Automation => handle_automation_keys(app, key_event).await?,
-        AppMode::Http => handle_http_keys(app, key_event).await?,
+    // Pane-specific event handling
+    match app.focused_pane {
+        FocusedPane::Collections => handle_tree_keys(app, key_event).await?,
+        FocusedPane::Form => handle_form_keys(app, key_event).await?,
+        FocusedPane::Logs => handle_log_keys(app, key_event).await?,
     }
 
     Ok(())
 }
 
-/// Handle keyboard events specific to automation mode
-async fn handle_automation_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+/// Handle keyboard events for the collections tree
+async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Navigate tree
+        KeyCode::Up => {
+            app.tree_state.move_focus(FocusDirection::Up);
+            app.log(LogLevel::Debug, "Tree: moved focus up");
+        }
+        KeyCode::Down => {
+            app.tree_state.move_focus(FocusDirection::Down);
+            app.log(LogLevel::Debug, "Tree: moved focus down");
+        }
+
+        // Expand/collapse or load template
+        KeyCode::Enter => {
+            // Extract the data we need first to avoid borrow checker issues
+            let node_info = app
+                .tree_state
+                .get_focused_node()
+                .map(|node| (node.path.clone(), node.name.clone(), node.node_type.clone()));
+
+            if let Some((path, name, node_type)) = node_info {
+                match node_type {
+                    NodeType::Folder => {
+                        // Toggle folder expansion
+                        app.tree_state.toggle_expansion(&path);
+                        app.log(LogLevel::Debug, format!("Tree: toggled folder {}", name));
+                    }
+                    NodeType::Template => {
+                        // Load template into form
+                        if let Err(e) = app.load_template_into_form(&path).await {
+                            app.log(LogLevel::Error, format!("Failed to load template: {}", e));
+                        } else {
+                            // Switch focus to form after loading
+                            app.focus_pane(FocusedPane::Form);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Just toggle expansion (don't load template)
+        KeyCode::Char(' ') => {
+            // Extract the data we need first, then drop the immutable borrow
+            let folder_info = app
+                .tree_state
+                .get_focused_node()
+                .filter(|node| node.node_type == NodeType::Folder)
+                .map(|node| (node.path.clone(), node.name.clone()));
+
+            if let Some((path, name)) = folder_info {
+                app.tree_state.toggle_expansion(&path);
+                app.log(LogLevel::Debug, format!("Tree: toggled folder {}", name));
+            }
+        }
+
+        // Select node (for future operations)
+        KeyCode::Char('s') => {
+            // Extract the data we need first to avoid borrow checker issues
+            let node_info = app
+                .tree_state
+                .get_focused_node()
+                .map(|node| (node.path.clone(), node.name.clone()));
+
+            if let Some((path, name)) = node_info {
+                app.tree_state.select_node(&path);
+                app.log(LogLevel::Debug, format!("Tree: selected {}", name));
+            }
+        }
+
+        // Create new template from current form
+        KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            // For now, save to root with timestamp name
+            let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+            let template_name = format!("Template_{}", timestamp);
+
+            if let Err(e) = app.create_template_from_form("", &template_name).await {
+                app.log(LogLevel::Error, format!("Failed to create template: {}", e));
+            }
+        }
+
+        // Delete selected template/folder (with confirmation)
+        KeyCode::Delete => {
+            // Extract the data we need first to avoid borrow checker issues
+            let template_info = app
+                .tree_state
+                .get_focused_node()
+                .filter(|node| node.node_type == NodeType::Template)
+                .map(|node| (node.path.clone(), node.name.clone()));
+
+            if let Some((template_path, name)) = template_info {
+                if let Err(e) = app.delete_template(&template_path).await {
+                    app.log(LogLevel::Error, format!("Failed to delete template: {}", e));
+                } else {
+                    app.log(LogLevel::Success, format!("Deleted template: {}", name));
+                }
+            }
+        }
+
+        // Refresh tree from storage
+        KeyCode::F(12) => {
+            if let Err(e) = app.refresh_tree_from_storage().await {
+                app.log(LogLevel::Error, format!("Failed to refresh tree: {}", e));
+            } else {
+                app.log(LogLevel::Success, "Tree refreshed from storage");
+            }
+        }
+
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Handle keyboard events for the form
+async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
     // If logging panel is open and we're searching, handle search input
     if app.show_logs && key_event.code != KeyCode::Esc {
         return handle_log_search_keys(app, key_event);
@@ -65,7 +198,7 @@ async fn handle_automation_keys(app: &mut App, key_event: KeyEvent) -> Result<()
                 app.automation_state.apply_selected_template();
             }
             app.log(LogLevel::Info, "Applied template: Quick Task");
-            return Ok(()); // Return early to prevent text input
+            return Ok(());
         }
         KeyCode::Char('2') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
             app.log(LogLevel::Debug, "Ctrl+2 detected - applying template 2");
@@ -74,7 +207,7 @@ async fn handle_automation_keys(app: &mut App, key_event: KeyEvent) -> Result<()
                 app.automation_state.apply_selected_template();
             }
             app.log(LogLevel::Info, "Applied template: Urgent Request");
-            return Ok(()); // Return early to prevent text input
+            return Ok(());
         }
         KeyCode::Char('3') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
             app.log(LogLevel::Debug, "Ctrl+3 detected - applying template 3");
@@ -83,7 +216,7 @@ async fn handle_automation_keys(app: &mut App, key_event: KeyEvent) -> Result<()
                 app.automation_state.apply_selected_template();
             }
             app.log(LogLevel::Info, "Applied template: Weekly Report");
-            return Ok(()); // Return early to prevent text input
+            return Ok(());
         }
 
         // Set demo credentials manually (temporary hotkey)
@@ -117,42 +250,50 @@ async fn handle_automation_keys(app: &mut App, key_event: KeyEvent) -> Result<()
             return Ok(());
         }
 
-        // Start automation - Changed to F3 for Mac compatibility
-        // KeyCode::F(3) => {
-        //     app.log(
-        //         LogLevel::Debug,
-        //         "F3 detected - attempting to start automation",
-        //     );
-        //     if !app.automation_state.is_running {
-        //         // Set demo credentials if none are provided (temporary)
-        //         if app.automation_state.credentials.is_none() {
-        //             app.automation_state
-        //                 .set_credentials("demo_user".to_string(), "demo_password".to_string());
-        //             app.log(LogLevel::Info, "Using demo credentials for testing");
-        //         }
-        //
-        //         if let Err(e) = app.start_automation().await {
-        //             app.log(
-        //                 LogLevel::Error,
-        //                 format!("Failed to start automation: {}", e),
-        //             );
-        //         }
-        //     } else {
-        //         app.log(LogLevel::Warn, "Automation is already running");
-        //     }
-        //     return Ok(()); // Return early to prevent text input
-        // }
+        // Start automation
+        KeyCode::F(3) => {
+            app.log(
+                LogLevel::Debug,
+                "F3 detected - attempting to start automation",
+            );
+            if !app.automation_state.is_running {
+                // Check if we have credentials, if not set demo ones
+                if !app.auth_service.has_credentials() {
+                    if let Err(e) = app
+                        .auth_service
+                        .store_credentials("demo_user".to_string(), "demo_password".to_string())
+                    {
+                        app.log(
+                            LogLevel::Error,
+                            format!("Failed to store demo credentials: {}", e),
+                        );
+                    } else {
+                        app.log(LogLevel::Info, "Using demo credentials for testing");
+                    }
+                }
+
+                if let Err(e) = app.start_automation().await {
+                    app.log(
+                        LogLevel::Error,
+                        format!("Failed to start automation: {}", e),
+                    );
+                }
+            } else {
+                app.log(LogLevel::Warn, "Automation is already running");
+            }
+            return Ok(());
+        }
 
         // Navigation between fields
         KeyCode::Tab => {
             app.automation_state.focus_next_field();
             app.log(LogLevel::Debug, "Moved to next field");
-            return Ok(()); // Return early to prevent text input
+            return Ok(());
         }
         KeyCode::BackTab => {
             app.automation_state.focus_prev_field();
             app.log(LogLevel::Debug, "Moved to previous field");
-            return Ok(()); // Return early to prevent text input
+            return Ok(());
         }
 
         // Clear current field
@@ -169,17 +310,17 @@ async fn handle_automation_keys(app: &mut App, key_event: KeyEvent) -> Result<()
                 }
                 app.log(LogLevel::Debug, format!("Cleared field: {}", field_name));
             }
-            return Ok(()); // Return early to prevent text input
+            return Ok(());
         }
 
-        // Text input for the focused field (only if no modifiers)
+        // Text input for the focused field
         KeyCode::Char(c) if key_event.modifiers.is_empty() => {
             if let Some(field) = app.automation_state.get_focused_field_mut() {
                 field.value.push(c);
             }
         }
 
-        // Backspace for text editing (only if no modifiers)
+        // Backspace for text editing
         KeyCode::Backspace if key_event.modifiers.is_empty() => {
             if let Some(field) = app.automation_state.get_focused_field_mut() {
                 field.value.pop();
@@ -210,14 +351,13 @@ fn handle_log_search_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-/// Handle keyboard events specific to HTTP mode (placeholder for now)
-async fn handle_http_keys(app: &mut App, _key_event: KeyEvent) -> Result<()> {
-    // TODO: Implement HTTP mode key handling
-    app.log(LogLevel::Info, "HTTP mode is not implemented yet");
+/// Handle keyboard events for the logs pane
+async fn handle_log_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    handle_log_search_keys(app, key_event)?;
     Ok(())
 }
 
-/// Get help text for the current mode
+/// Get help text for the current mode and focused pane
 pub fn get_help_text(app: &App) -> Vec<String> {
     let mut help = vec![
         "Global Keybindings:".to_string(),
@@ -225,38 +365,42 @@ pub fn get_help_text(app: &App) -> Vec<String> {
         "  F2: Toggle logging panel".to_string(),
         "  F1: Switch to Automation mode".to_string(),
         "  F4: Switch to HTTP mode".to_string(),
+        "  F5/F6/F7: Focus Collections/Form/Logs".to_string(),
         "".to_string(),
     ];
 
-    match app.current_mode {
-        AppMode::Automation => {
+    match app.focused_pane {
+        FocusedPane::Collections => {
             help.extend(vec![
-                "Automation Mode:".to_string(),
+                "Collections Tree:".to_string(),
+                "  ↑/↓: Navigate tree".to_string(),
+                "  Enter: Load template or expand folder".to_string(),
+                "  Space: Toggle folder expansion".to_string(),
+                "  S: Select node".to_string(),
+                "  Ctrl+N: Create template from form".to_string(),
+                "  Del: Delete selected template".to_string(),
+                "  F12: Refresh tree".to_string(),
+            ]);
+        }
+        FocusedPane::Form => {
+            help.extend(vec![
+                "Form Mode:".to_string(),
                 "  Tab/Shift+Tab: Navigate between fields".to_string(),
                 "  Ctrl+1/2/3: Apply templates".to_string(),
                 "  Ctrl+C: Set demo credentials".to_string(),
                 "  Ctrl+X: Clear credentials".to_string(),
                 "  F3: Start automation".to_string(),
                 "  Delete: Clear current field".to_string(),
+            ]);
+        }
+        FocusedPane::Logs => {
+            help.extend(vec![
+                "Log Search:".to_string(),
+                "  Type to search logs".to_string(),
+                "  Delete: Clear search".to_string(),
                 "  Esc: Close logging panel".to_string(),
             ]);
         }
-        AppMode::Http => {
-            help.extend(vec![
-                "HTTP Mode:".to_string(),
-                "  (Not implemented yet)".to_string(),
-            ]);
-        }
-    }
-
-    if app.show_logs {
-        help.extend(vec![
-            "".to_string(),
-            "Log Search:".to_string(),
-            "  Type to search logs".to_string(),
-            "  Delete: Clear search".to_string(),
-            "  Esc: Close logging panel".to_string(),
-        ]);
     }
 
     help

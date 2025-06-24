@@ -1,5 +1,7 @@
 use crate::app::{App, AppMode, FocusedPane};
-use crate::ui::components::{render_automation_form, render_logging_panel, render_login_popup};
+use crate::ui::components::{
+    render_automation_form, render_collections_tree, render_logging_panel, render_login_popup,
+};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -55,7 +57,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(tabs, area);
 }
 
-/// THIS IS THE MISSING FUNCTION - Controls the main layout
+/// Main content layout controller
 fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
     if app.show_logs {
         // When logs are shown: Collections (left) | Form (top-right) | Logs (bottom-right)
@@ -67,8 +69,8 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
             ])
             .split(area);
 
-        // Collections on the left
-        render_collections_panel(f, horizontal_chunks[0], app);
+        // Collections tree on the left
+        render_collections_tree(f, horizontal_chunks[0], app);
 
         // Split right side: Form (top) | Logs (bottom)
         let vertical_chunks = Layout::default()
@@ -106,8 +108,8 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
             ])
             .split(area);
 
-        // Collections on the left
-        render_collections_panel(f, horizontal_chunks[0], app);
+        // Collections tree on the left
+        render_collections_tree(f, horizontal_chunks[0], app);
 
         // Form on the right
         match app.current_mode {
@@ -124,49 +126,6 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
             }
         }
     }
-}
-
-/// Render the collections panel (left side)
-fn render_collections_panel(f: &mut Frame, area: Rect, app: &App) {
-    // Focus indicator
-    let border_style = if app.focused_pane == FocusedPane::Collections {
-        Style::default().fg(Color::Blue)
-    } else {
-        Style::default().fg(Color::White)
-    };
-
-    let collections_text = vec![
-        Line::from(Span::styled(
-            "📁 Collections",
-            Style::default().fg(Color::Cyan),
-        )),
-        Line::from(""),
-        Line::from("📂 Customer"),
-        Line::from("  📂 Add"),
-        Line::from("    📄 Email"),
-        Line::from("    📄 Phone"),
-        Line::from("  📂 Update"),
-        Line::from("    📄 Profile"),
-        Line::from(""),
-        Line::from("📂 Reports"),
-        Line::from("  📄 Daily Summary"),
-        Line::from("  📄 Weekly Report"),
-        Line::from(""),
-        Line::from(Span::styled(
-            "F5: Focus this pane",
-            Style::default().fg(Color::Gray),
-        )),
-    ];
-
-    let collections_panel = Paragraph::new(collections_text).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title("Collections")
-            .title_style(Style::default().fg(Color::Green))
-            .border_style(border_style),
-    );
-
-    f.render_widget(collections_panel, area);
 }
 
 /// Placeholder for HTTP mode
@@ -209,6 +168,20 @@ pub fn get_theme_colors() -> ThemeColors {
         border: Color::White,
         focused_border: Color::Blue,
     }
+}
+
+/// Calculate layout for different screen sizes
+pub fn calculate_layout(area: Rect) -> (Rect, Rect, Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Header
+            Constraint::Min(10),   // Content
+            Constraint::Length(3), // Footer
+        ])
+        .split(area);
+
+    (chunks[0], chunks[1], chunks[2])
 }
 
 /// Theme color definitions

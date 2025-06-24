@@ -1,7 +1,8 @@
-use crate::models::{LogEntry, LogLevel};
+use crate::models::{AppConfig, LogEntry, LogLevel, TreeState};
 use crate::modes::automation::AutomationState;
-use crate::services::AuthService;
+use crate::services::{AuthService, TemplateStorage};
 use anyhow::Result;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
@@ -37,6 +38,15 @@ pub enum AppMessage {
 
 /// Global app state that coordinates everything
 pub struct App {
+    /// Application configuration
+    pub config: AppConfig,
+
+    /// Template storage service
+    pub template_storage: TemplateStorage,
+
+    /// Collections tree state
+    pub tree_state: TreeState,
+
     /// Current mode (Automation or HTTP)
     pub current_mode: AppMode,
 
@@ -81,13 +91,33 @@ impl App {
     pub fn new() -> Self {
         let (message_sender, message_receiver) = mpsc::unbounded_channel();
 
+        // Load or create configuration
+        let config = AppConfig::load().unwrap_or_else(|e| {
+            eprintln!("Failed to load config: {}, using defaults", e);
+            AppConfig::default()
+        });
+
+        // Initialize template storage
+        let template_storage = TemplateStorage::new(config.clone());
+        if let Err(e) = template_storage.initialize() {
+            eprintln!("Failed to initialize template storage: {}", e);
+        }
+
+        // Build the initial tree state
+        let tree_state = Self::build_initial_tree_state(&template_storage);
+
+        let show_logs = config.show_logs_on_startup;
+
         let mut app = Self {
+            config,
+            template_storage,
+            tree_state,
             current_mode: AppMode::Automation,
             focused_pane: FocusedPane::Form, // Start with form focused
             automation_state: AutomationState::new(),
             auth_service: AuthService::new(),
             log_entries: Vec::new(),
-            show_logs: true, // Changed from false to true - logs open by default
+            show_logs,
             log_search_query: String::new(),
             show_login_popup: false,
             login_username: String::new(),
@@ -100,7 +130,39 @@ impl App {
 
         // Log initial startup message
         app.log(LogLevel::Info, "Application started");
+        app.log(
+            LogLevel::Info,
+            format!(
+                "Templates directory: {}",
+                app.template_storage.get_templates_directory_display()
+            ),
+        );
         app
+    }
+
+    /// Build the initial tree state from template storage
+    fn build_initial_tree_state(template_storage: &TemplateStorage) -> TreeState {
+        // Get all folders and templates
+        let folders = template_storage.list_all_folders().unwrap_or_default();
+        let mut templates_by_folder = HashMap::new();
+
+        // Get templates for each folder
+        for folder in &folders {
+            if let Ok(templates) = template_storage.list_templates_in_folder(folder) {
+                if !templates.is_empty() {
+                    templates_by_folder.insert(folder.clone(), templates);
+                }
+            }
+        }
+
+        // Also check for templates in the root directory
+        if let Ok(root_templates) = template_storage.list_templates_in_folder("") {
+            if !root_templates.is_empty() {
+                templates_by_folder.insert("".to_string(), root_templates);
+            }
+        }
+
+        TreeState::build_from_storage(folders, templates_by_folder)
     }
 
     /// Process any pending messages from background tasks
@@ -336,5 +398,125 @@ impl App {
     /// Get a clone of the message sender for background tasks
     pub fn get_message_sender(&self) -> mpsc::UnboundedSender<AppMessage> {
         self.message_sender.clone()
+    }
+    /// Refresh tree state from template storage
+    pub async fn refresh_tree_from_storage(&mut self) -> Result<()> {
+        use std::collections::HashMap;
+
+        // Get all folders and templates from storage
+        let folders = self.template_storage.list_all_folders().unwrap_or_default();
+        let mut templates_by_folder = HashMap::new();
+
+        // Get templates for each folder
+        for folder in &folders {
+            if let Ok(templates) = self.template_storage.list_templates_in_folder(folder) {
+                if !templates.is_empty() {
+                    templates_by_folder.insert(folder.clone(), templates);
+                }
+            }
+        }
+
+        // Also check for templates in the root directory
+        if let Ok(root_templates) = self.template_storage.list_templates_in_folder("") {
+            if !root_templates.is_empty() {
+                templates_by_folder.insert("".to_string(), root_templates);
+            }
+        }
+
+        // Rebuild tree state
+        self.tree_state =
+            crate::models::TreeState::build_from_storage(folders, templates_by_folder);
+
+        self.log(LogLevel::Debug, "Tree state refreshed from storage");
+        Ok(())
+    }
+
+    /// Load a template from storage into the automation form
+    pub async fn load_template_into_form(&mut self, template_path: &str) -> Result<()> {
+        // Parse the template path to get folder and template name
+        let (folder_path, template_name) = if let Some(pos) = template_path.rfind('/') {
+            (&template_path[..pos], &template_path[pos + 1..])
+        } else {
+            ("", template_path)
+        };
+
+        // Load the template from storage
+        match self
+            .template_storage
+            .load_template(folder_path, template_name)
+        {
+            Ok(stored_template) => {
+                // Apply the template to the form fields
+                stored_template
+                    .template
+                    .apply_to_fields(&mut self.automation_state.fields);
+                self.log(
+                    LogLevel::Success,
+                    format!("Loaded template: {}", template_name),
+                );
+                Ok(())
+            }
+            Err(e) => {
+                self.log(LogLevel::Error, format!("Failed to load template: {}", e));
+                Err(e)
+            }
+        }
+    }
+
+    /// Create a new template from current form state
+    pub async fn create_template_from_form(
+        &mut self,
+        folder_path: &str,
+        template_name: &str,
+    ) -> Result<()> {
+        use crate::models::AutomationTemplate;
+
+        // Create template from current form values
+        let mut template = AutomationTemplate::new(template_name, "Template created from form");
+
+        // Add current field values to template
+        for field in &self.automation_state.fields {
+            if !field.value.is_empty() {
+                template = template.with_field(&field.name, &field.value);
+            }
+        }
+
+        // Save to storage
+        match self
+            .template_storage
+            .save_template(folder_path, template_name, template)
+        {
+            Ok(_) => {
+                self.log(
+                    LogLevel::Success,
+                    format!("Created template: {}", template_name),
+                );
+                // Refresh tree to show new template
+                self.refresh_tree_from_storage().await?;
+                Ok(())
+            }
+            Err(e) => {
+                self.log(LogLevel::Error, format!("Failed to save template: {}", e));
+                Err(e)
+            }
+        }
+    }
+
+    /// Delete a template from storage
+    pub async fn delete_template(&mut self, template_path: &str) -> Result<()> {
+        let (folder_path, template_name) = if let Some(pos) = template_path.rfind('/') {
+            (&template_path[..pos], &template_path[pos + 1..])
+        } else {
+            ("", template_path)
+        };
+
+        self.template_storage
+            .delete_template(folder_path, template_name)?;
+        self.log(
+            LogLevel::Success,
+            format!("Deleted template: {}", template_name),
+        );
+        self.refresh_tree_from_storage().await?;
+        Ok(())
     }
 }
