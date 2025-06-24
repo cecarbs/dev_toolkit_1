@@ -2,6 +2,7 @@ mod app;
 mod events;
 mod models;
 mod modes;
+mod services;
 mod ui;
 
 use anyhow::Result;

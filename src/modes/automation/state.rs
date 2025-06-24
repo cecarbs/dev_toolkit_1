@@ -21,9 +21,6 @@ pub struct AutomationState {
 
     /// Website configuration
     pub website_config: WebsiteConfig,
-
-    /// Authentication credentials (temporary storage)
-    pub credentials: Option<Credentials>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,19 +38,37 @@ impl AutomationState {
             focused_field: 0,
             is_running: false,
             website_config: WebsiteConfig::default(),
-            credentials: None,
         }
     }
 
-    /// Create the 5 form fields you mentioned for your specific use case
-    /// You can customize these based on your actual website form
+    /// Create form fields with examples of text inputs and dropdowns
     fn create_default_fields() -> Vec<FormField> {
         vec![
-            FormField::new("Project Name", "#project_name", FieldType::Text),
-            FormField::new("Department", "#department", FieldType::Select),
-            FormField::new("Priority Level", "#priority", FieldType::Select),
-            FormField::new("Description", "#description", FieldType::Textarea),
-            FormField::new("Contact Email", "#contact_email", FieldType::Email),
+            // Text input example
+            FormField::new("Project Name", "#project_name", FieldType::Text).with_required(true),
+            // Dropdown example
+            FormField::new("Department", "#department", FieldType::Select)
+                .with_required(true)
+                .with_dropdown_options(vec![
+                    "Engineering".to_string(),
+                    "Marketing".to_string(),
+                    "Sales".to_string(),
+                    "Support".to_string(),
+                    "HR".to_string(),
+                ]),
+            // Another dropdown example
+            FormField::new("Priority Level", "#priority", FieldType::Select)
+                .with_required(true)
+                .with_dropdown_options(vec![
+                    "High".to_string(),
+                    "Medium".to_string(),
+                    "Low".to_string(),
+                ]),
+            // Textarea example
+            FormField::new("Description", "#description", FieldType::Textarea).with_required(true),
+            // Optional text input example
+            FormField::new("Contact Email", "#contact_email", FieldType::Email)
+                .with_required(false), // This will show as "(optional)"
         ]
     }
 
@@ -77,7 +92,7 @@ impl AutomationState {
                 .with_field("Department", "Engineering")
                 .with_field("Priority Level", "Low")
                 .with_field("Description", "Weekly progress report and status update")
-                .with_field("Contact Email", "user@company.com"),
+                .with_field("Contact Email", ""),
         ]
     }
 
@@ -132,9 +147,7 @@ impl AutomationState {
 
     /// Check if all required fields have values
     pub fn is_valid(&self) -> bool {
-        self.fields
-            .iter()
-            .all(|field| !field.value.trim().is_empty())
+        self.fields.iter().all(|field| field.is_valid())
     }
 
     /// Set the running state
@@ -142,13 +155,16 @@ impl AutomationState {
         self.is_running = running;
     }
 
-    /// Store credentials temporarily
-    pub fn set_credentials(&mut self, username: String, password: String) {
-        self.credentials = Some(Credentials { username, password });
-    }
+    /// Get validation errors for display
+    pub fn get_validation_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
 
-    /// Clear stored credentials
-    pub fn clear_credentials(&mut self) {
-        self.credentials = None;
+        for field in &self.fields {
+            if !field.is_valid() {
+                errors.push(format!("'{}' is required", field.name));
+            }
+        }
+
+        errors
     }
 }

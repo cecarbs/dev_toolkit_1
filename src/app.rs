@@ -1,5 +1,6 @@
 use crate::models::{LogEntry, LogLevel};
 use crate::modes::automation::AutomationState;
+use crate::services::AuthService;
 use anyhow::Result;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
@@ -9,6 +10,14 @@ use tokio::sync::{Mutex, mpsc};
 pub enum AppMode {
     Automation,
     Http, // Placeholder for future implementation
+}
+
+/// Different UI panes that can be focused
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FocusedPane {
+    Collections,
+    Form,
+    Logs,
 }
 
 /// Messages that can be sent to the app from background tasks
@@ -31,8 +40,14 @@ pub struct App {
     /// Current mode (Automation or HTTP)
     pub current_mode: AppMode,
 
+    /// Currently focused pane
+    pub focused_pane: FocusedPane,
+
     /// Automation mode state
     pub automation_state: AutomationState,
+
+    /// Authentication service
+    pub auth_service: AuthService,
 
     /// Log entries for the logging panel
     pub log_entries: Vec<LogEntry>,
@@ -42,6 +57,14 @@ pub struct App {
 
     /// Search query for filtering logs
     pub log_search_query: String,
+
+    /// Whether the login popup is visible
+    pub show_login_popup: bool,
+
+    /// Login form state
+    pub login_username: String,
+    pub login_password: String,
+    pub login_error: Option<String>,
 
     /// Whether the app should quit
     pub should_quit: bool,
@@ -60,10 +83,16 @@ impl App {
 
         let mut app = Self {
             current_mode: AppMode::Automation,
+            focused_pane: FocusedPane::Form, // Start with form focused
             automation_state: AutomationState::new(),
+            auth_service: AuthService::new(),
             log_entries: Vec::new(),
-            show_logs: false,
+            show_logs: true, // Changed from false to true - logs open by default
             log_search_query: String::new(),
+            show_login_popup: false,
+            login_username: String::new(),
+            login_password: String::new(),
+            login_error: None,
             should_quit: false,
             message_receiver: Arc::new(Mutex::new(message_receiver)),
             message_sender,
@@ -142,13 +171,18 @@ impl App {
     /// Toggle the logging panel visibility
     pub fn toggle_logs(&mut self) {
         self.show_logs = !self.show_logs;
-        self.log(
-            LogLevel::Debug,
-            format!(
-                "Logging panel {}",
-                if self.show_logs { "opened" } else { "closed" }
-            ),
-        );
+        let status = if self.show_logs { "opened" } else { "closed" };
+
+        // Add some debug info to help troubleshoot
+        self.log_entries.push(LogEntry::new(
+            LogLevel::Info,
+            format!("Logging panel {} (show_logs={})", status, self.show_logs),
+        ));
+
+        // Keep log entries under a reasonable limit
+        if self.log_entries.len() > 1000 {
+            self.log_entries.drain(0..100);
+        }
     }
 
     /// Switch to a different mode
@@ -159,44 +193,120 @@ impl App {
         }
     }
 
-    /// Start automation process (this will be called from UI)
+    /// Switch focus to a different pane
+    pub fn focus_pane(&mut self, pane: FocusedPane) {
+        self.focused_pane = pane.clone();
+        self.log(LogLevel::Debug, format!("Focused {:?} pane", pane));
+    }
+
+    /// Show the login popup
+    pub fn show_login(&mut self) {
+        self.show_login_popup = true;
+        self.login_username.clear();
+        self.login_password.clear();
+        self.login_error = None;
+        self.log(LogLevel::Debug, "Login popup opened");
+    }
+
+    /// Hide the login popup
+    pub fn hide_login(&mut self) {
+        self.show_login_popup = false;
+        self.login_username.clear();
+        self.login_password.clear();
+        self.login_error = None;
+        self.log(LogLevel::Debug, "Login popup closed");
+    }
+
+    /// Attempt to login with current form data
+    pub fn attempt_login(&mut self) -> bool {
+        // Validate credentials format
+        match crate::services::AuthService::validate_credentials(
+            &self.login_username,
+            &self.login_password,
+        ) {
+            Ok(()) => {
+                // Store credentials in auth service
+                match self
+                    .auth_service
+                    .store_credentials(self.login_username.clone(), self.login_password.clone())
+                {
+                    Ok(()) => {
+                        self.log(
+                            LogLevel::Success,
+                            format!("Logged in as: {}", self.login_username),
+                        );
+                        self.hide_login();
+                        true
+                    }
+                    Err(err) => {
+                        self.login_error = Some(err);
+                        false
+                    }
+                }
+            }
+            Err(err) => {
+                self.login_error = Some(err);
+                false
+            }
+        }
+    }
+
+    /// Start automation process (this will be called from Send button)
     pub async fn start_automation(&mut self) -> Result<()> {
+        self.log(LogLevel::Debug, "start_automation() called");
+
         if self.automation_state.is_running {
             self.log(LogLevel::Warn, "Automation is already running");
             return Ok(());
         }
 
+        // Check if fields are valid
+        self.log(LogLevel::Debug, "Checking if fields are valid...");
         if !self.automation_state.is_valid() {
-            self.log(
-                LogLevel::Error,
-                "Cannot start automation: some fields are empty",
-            );
+            let errors = self.automation_state.get_validation_errors();
+            for error in &errors {
+                self.log(LogLevel::Error, error.clone());
+            }
             return Ok(());
         }
+        self.log(LogLevel::Debug, "Fields validation passed");
 
         // Check if we have credentials
-        if self.automation_state.credentials.is_none() {
+        self.log(LogLevel::Debug, "Checking credentials...");
+        if !self.auth_service.has_credentials() {
             self.log(
                 LogLevel::Error,
                 "Cannot start automation: no credentials provided",
             );
+            self.show_login();
             return Ok(());
         }
+        self.log(LogLevel::Debug, "Credentials check passed");
+
+        // Get credentials from auth service
+        let credentials = self.auth_service.get_credentials().unwrap();
 
         self.automation_state.set_running(true);
-        self.log(LogLevel::Info, "Starting browser automation...");
+        self.log(LogLevel::Info, "🚀 Starting browser automation...");
 
         // Clone the data we need for the background task
         let fields = self.automation_state.fields.clone();
-        let credentials = self.automation_state.credentials.clone().unwrap();
         let website_config = self.automation_state.website_config.clone();
         let sender = self.message_sender.clone();
+
+        self.log(LogLevel::Debug, "Spawning browser automation task...");
 
         // Spawn the browser automation task
         tokio::spawn(async move {
             use crate::modes::BrowserEngine;
 
             let browser_engine = BrowserEngine::new(sender.clone());
+
+            // Send initial message to confirm task started
+            let _ = sender.send(AppMessage::Log(
+                LogLevel::Debug,
+                "Browser automation task spawned successfully".to_string(),
+            ));
 
             match browser_engine
                 .run_automation(fields, credentials, website_config)
@@ -206,13 +316,14 @@ impl App {
                     browser_engine.send_completion().await;
                 }
                 Err(error) => {
-                    browser_engine
-                        .send_failure(format!("Browser automation failed: {}", error))
-                        .await;
+                    let error_msg = format!("Browser automation failed: {}", error);
+                    let _ = sender.send(AppMessage::Log(LogLevel::Error, error_msg.clone()));
+                    browser_engine.send_failure(error_msg).await;
                 }
             }
         });
 
+        self.log(LogLevel::Debug, "Browser automation task spawned");
         Ok(())
     }
 

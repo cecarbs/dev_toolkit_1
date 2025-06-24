@@ -8,6 +8,8 @@ pub struct FormField {
     pub selector: String, // CSS selector for the field
     pub value: String,
     pub field_type: FieldType,
+    pub is_required: bool,
+    pub dropdown_options: Option<Vec<String>>, // For dropdown fields
 }
 
 /// Different types of form fields we can handle
@@ -31,12 +33,47 @@ impl FormField {
             selector: selector.into(),
             value: String::new(),
             field_type,
+            is_required: true,
+            dropdown_options: None,
         }
     }
 
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = value.into();
         self
+    }
+
+    pub fn with_required(mut self, required: bool) -> Self {
+        self.is_required = required;
+        self
+    }
+
+    pub fn with_dropdown_options(mut self, options: Vec<String>) -> Self {
+        self.dropdown_options = Some(options);
+        self
+    }
+
+    /// Get the display label for the field (includes optional indicator)
+    pub fn get_display_label(&self) -> String {
+        if self.is_required {
+            self.name.clone()
+        } else {
+            format!("{} (optional)", self.name)
+        }
+    }
+
+    /// Check if the field is valid (required fields must have values)
+    pub fn is_valid(&self) -> bool {
+        if !self.is_required {
+            return true; // Optional fields are always valid
+        }
+
+        !self.value.trim().is_empty()
+    }
+
+    /// Get dropdown options or empty vec if not a dropdown
+    pub fn get_dropdown_options(&self) -> Vec<String> {
+        self.dropdown_options.clone().unwrap_or_default()
     }
 }
 

@@ -12,8 +12,9 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
             app.quit();
             return Ok(());
         }
-        // Toggle logging panel
-        KeyCode::Char('l') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+        // Toggle logging panel - Changed to F2 for Mac compatibility
+        KeyCode::F(2) => {
+            app.log(LogLevel::Debug, "F2 detected - toggling logs");
             app.toggle_logs();
             return Ok(());
         }
@@ -22,7 +23,7 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
             app.switch_mode(AppMode::Automation);
             return Ok(());
         }
-        KeyCode::F(2) => {
+        KeyCode::F(4) => {
             app.switch_mode(AppMode::Http);
             return Ok(());
         }
@@ -45,87 +46,113 @@ async fn handle_automation_keys(app: &mut App, key_event: KeyEvent) -> Result<()
         return handle_log_search_keys(app, key_event);
     }
 
+    // Handle special key combinations FIRST before text input
     match key_event.code {
         // Close logging panel
         KeyCode::Esc => {
             if app.show_logs {
                 app.show_logs = false;
                 app.log_search_query.clear();
+                app.log(LogLevel::Debug, "Closed logging panel");
             }
         }
 
-        // Navigation between fields
-        KeyCode::Tab => {
-            app.automation_state.focus_next_field();
-            app.log(LogLevel::Debug, "Moved to next field");
-        }
-        KeyCode::BackTab => {
-            app.automation_state.focus_prev_field();
-            app.log(LogLevel::Debug, "Moved to previous field");
-        }
-
-        // Template selection
+        // Template selection - handle BEFORE text input
         KeyCode::Char('1') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.log(LogLevel::Debug, "Ctrl+1 detected - applying template 1");
             {
                 app.automation_state.selected_template = Some(0);
                 app.automation_state.apply_selected_template();
             }
             app.log(LogLevel::Info, "Applied template: Quick Task");
+            return Ok(()); // Return early to prevent text input
         }
         KeyCode::Char('2') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.log(LogLevel::Debug, "Ctrl+2 detected - applying template 2");
             {
                 app.automation_state.selected_template = Some(1);
                 app.automation_state.apply_selected_template();
             }
             app.log(LogLevel::Info, "Applied template: Urgent Request");
+            return Ok(()); // Return early to prevent text input
         }
         KeyCode::Char('3') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.log(LogLevel::Debug, "Ctrl+3 detected - applying template 3");
             {
                 app.automation_state.selected_template = Some(2);
                 app.automation_state.apply_selected_template();
             }
             app.log(LogLevel::Info, "Applied template: Weekly Report");
-        }
-
-        // Start automation
-        KeyCode::Enter if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            if !app.automation_state.is_running {
-                // Set demo credentials if none are provided (temporary)
-                if app.automation_state.credentials.is_none() {
-                    app.automation_state
-                        .set_credentials("demo_user".to_string(), "demo_password".to_string());
-                    app.log(LogLevel::Info, "Using demo credentials for testing");
-                }
-
-                app.start_automation().await?;
-            }
+            return Ok(()); // Return early to prevent text input
         }
 
         // Set demo credentials manually (temporary hotkey)
         KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.automation_state
-                .set_credentials("demo_user".to_string(), "demo_password".to_string());
-            app.log(LogLevel::Info, "Demo credentials set");
+            app.log(LogLevel::Debug, "Ctrl+C detected - setting credentials");
+            if let Err(e) = app
+                .auth_service
+                .store_credentials("demo_user".to_string(), "demo_password".to_string())
+            {
+                app.log(
+                    LogLevel::Error,
+                    format!("Failed to store credentials: {}", e),
+                );
+            } else {
+                app.log(LogLevel::Info, "Demo credentials set");
+            }
+            return Ok(());
         }
 
         // Clear credentials
         KeyCode::Char('x') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.automation_state.clear_credentials();
-            app.log(LogLevel::Info, "Credentials cleared");
+            app.log(LogLevel::Debug, "Ctrl+X detected - clearing credentials");
+            if let Err(e) = app.auth_service.clear_credentials() {
+                app.log(
+                    LogLevel::Error,
+                    format!("Failed to clear credentials: {}", e),
+                );
+            } else {
+                app.log(LogLevel::Info, "Credentials cleared");
+            }
+            return Ok(());
         }
 
-        // Text input for the focused field
-        KeyCode::Char(c) => {
-            if let Some(field) = app.automation_state.get_focused_field_mut() {
-                field.value.push(c);
-            }
-        }
+        // Start automation - Changed to F3 for Mac compatibility
+        // KeyCode::F(3) => {
+        //     app.log(
+        //         LogLevel::Debug,
+        //         "F3 detected - attempting to start automation",
+        //     );
+        //     if !app.automation_state.is_running {
+        //         // Set demo credentials if none are provided (temporary)
+        //         if app.automation_state.credentials.is_none() {
+        //             app.automation_state
+        //                 .set_credentials("demo_user".to_string(), "demo_password".to_string());
+        //             app.log(LogLevel::Info, "Using demo credentials for testing");
+        //         }
+        //
+        //         if let Err(e) = app.start_automation().await {
+        //             app.log(
+        //                 LogLevel::Error,
+        //                 format!("Failed to start automation: {}", e),
+        //             );
+        //         }
+        //     } else {
+        //         app.log(LogLevel::Warn, "Automation is already running");
+        //     }
+        //     return Ok(()); // Return early to prevent text input
+        // }
 
-        // Backspace for text editing
-        KeyCode::Backspace => {
-            if let Some(field) = app.automation_state.get_focused_field_mut() {
-                field.value.pop();
-            }
+        // Navigation between fields
+        KeyCode::Tab => {
+            app.automation_state.focus_next_field();
+            app.log(LogLevel::Debug, "Moved to next field");
+            return Ok(()); // Return early to prevent text input
+        }
+        KeyCode::BackTab => {
+            app.automation_state.focus_prev_field();
+            app.log(LogLevel::Debug, "Moved to previous field");
+            return Ok(()); // Return early to prevent text input
         }
 
         // Clear current field
@@ -141,6 +168,21 @@ async fn handle_automation_keys(app: &mut App, key_event: KeyEvent) -> Result<()
                     field.value.clear();
                 }
                 app.log(LogLevel::Debug, format!("Cleared field: {}", field_name));
+            }
+            return Ok(()); // Return early to prevent text input
+        }
+
+        // Text input for the focused field (only if no modifiers)
+        KeyCode::Char(c) if key_event.modifiers.is_empty() => {
+            if let Some(field) = app.automation_state.get_focused_field_mut() {
+                field.value.push(c);
+            }
+        }
+
+        // Backspace for text editing (only if no modifiers)
+        KeyCode::Backspace if key_event.modifiers.is_empty() => {
+            if let Some(field) = app.automation_state.get_focused_field_mut() {
+                field.value.pop();
             }
         }
 
@@ -180,9 +222,9 @@ pub fn get_help_text(app: &App) -> Vec<String> {
     let mut help = vec![
         "Global Keybindings:".to_string(),
         "  Ctrl+Q: Quit application".to_string(),
-        "  Ctrl+L: Toggle logging panel".to_string(),
+        "  F2: Toggle logging panel".to_string(),
         "  F1: Switch to Automation mode".to_string(),
-        "  F2: Switch to HTTP mode".to_string(),
+        "  F4: Switch to HTTP mode".to_string(),
         "".to_string(),
     ];
 
@@ -194,7 +236,7 @@ pub fn get_help_text(app: &App) -> Vec<String> {
                 "  Ctrl+1/2/3: Apply templates".to_string(),
                 "  Ctrl+C: Set demo credentials".to_string(),
                 "  Ctrl+X: Clear credentials".to_string(),
-                "  Ctrl+Enter: Start automation".to_string(),
+                "  F3: Start automation".to_string(),
                 "  Delete: Clear current field".to_string(),
                 "  Esc: Close logging panel".to_string(),
             ]);
@@ -213,6 +255,7 @@ pub fn get_help_text(app: &App) -> Vec<String> {
             "Log Search:".to_string(),
             "  Type to search logs".to_string(),
             "  Delete: Clear search".to_string(),
+            "  Esc: Close logging panel".to_string(),
         ]);
     }
 

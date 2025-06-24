@@ -1,4 +1,6 @@
+use crate::app::FocusedPane;
 use crate::modes::automation::AutomationState;
+use crate::services::AuthService;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -7,291 +9,271 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
 };
 
-/// Render the automation form with fields and templates
-pub fn render_automation_form(f: &mut Frame, area: Rect, state: &AutomationState) {
+/// Render the automation form with fields and send button (no templates section)
+pub fn render_automation_form(
+    f: &mut Frame,
+    area: Rect,
+    state: &AutomationState,
+    auth_service: &AuthService,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Percentage(60), // Main form area
-            Constraint::Percentage(40), // Credentials and status area
+            Constraint::Min(10),   // Form fields area (takes most space)
+            Constraint::Length(6), // Send button and auth status
         ])
         .split(area);
 
-    // Top area: Form fields and templates
-    let top_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(chunks[0]);
+    // Render form fields
+    render_form_fields(f, chunks[0], state);
 
-    // Left side: Form fields
-    render_form_fields(f, top_chunks[0], state);
-
-    // Right side: Templates
-    render_templates_section(f, top_chunks[1], state);
-
-    // Bottom area: Credentials and status
-    let bottom_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(chunks[1]);
-
-    render_credentials_section(f, bottom_chunks[0], state);
-    render_status_and_actions(f, bottom_chunks[1], state);
+    // Render send button and auth status
+    render_send_section(f, chunks[1], state, auth_service);
 }
 
-/// Render the form fields on the left side
+/// Render the form fields with proper focus indicators
 fn render_form_fields(f: &mut Frame, area: Rect, state: &AutomationState) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Title
-            Constraint::Min(10),   // Fields
-            Constraint::Length(3), // Action buttons
-        ])
-        .split(area);
+    // Get border style based on focus - make it obvious
+    let border_style = Style::default().fg(Color::White);
+    let title_style = Style::default().fg(Color::Green);
 
-    // Title
-    let title = Paragraph::new("Form Fields")
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Automation Mode"),
-        )
-        .style(Style::default().fg(Color::Cyan));
-    f.render_widget(title, chunks[0]);
-
-    // Form fields
-    render_field_list(f, chunks[1], state);
-
-    // Action buttons
-    render_action_buttons(f, chunks[2], state);
-}
-
-/// Render the list of form fields with current values
-fn render_field_list(f: &mut Frame, area: Rect, state: &AutomationState) {
-    let items: Vec<ListItem> = state
+    let field_items: Vec<ListItem> = state
         .fields
         .iter()
         .enumerate()
-        .map(|(i, field)| {
-            let is_focused = i == state.focused_field;
-            let display_value = if field.value.is_empty() {
-                "<empty>".to_string()
-            } else {
-                field.value.clone()
-            };
-
-            let style = if is_focused {
-                Style::default().fg(Color::Yellow).bg(Color::DarkGray)
-            } else {
-                Style::default()
-            };
-
-            let line = Line::from(vec![
-                Span::styled(
-                    format!("{:15}", field.name),
-                    Style::default().fg(Color::Green),
-                ),
-                Span::raw(": "),
-                Span::styled(display_value, style),
-            ]);
-
-            ListItem::new(line)
-        })
+        .map(|(i, field)| render_field_item(field, i, state.focused_field))
         .collect();
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Fields (Tab/Shift+Tab to navigate)"),
-        )
-        .highlight_style(Style::default().bg(Color::DarkGray));
+    let list = List::new(field_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("Form Fields (Tab/Shift+Tab to navigate, F6 to focus)")
+            .title_style(title_style)
+            .border_style(border_style),
+    );
 
     f.render_widget(list, area);
 }
 
-/// Render action buttons at the bottom
-fn render_action_buttons(f: &mut Frame, area: Rect, state: &AutomationState) {
-    let has_credentials = state.credentials.is_some();
-    let fields_valid = state.is_valid();
+/// Render a single form field item with appropriate input type
+fn render_field_item(
+    field: &crate::models::FormField,
+    index: usize,
+    focused_index: usize,
+) -> ListItem {
+    let is_focused = index == focused_index;
+    let is_valid = field.is_valid();
 
-    let (button_text, style) = if state.is_running {
-        (
-            "⏳ Browser automation in progress...",
-            Style::default().fg(Color::Yellow),
-        )
-    } else if !fields_valid {
-        (
-            "❌ Fill all fields to continue",
-            Style::default().fg(Color::Red),
-        )
-    } else if !has_credentials {
-        (
-            "🔑 Add credentials below, then press Ctrl+Enter",
-            Style::default().fg(Color::Yellow),
-        )
-    } else {
-        (
-            "▶️  Press Ctrl+Enter to start automation",
-            Style::default().fg(Color::Green),
-        )
+    // Determine field display value and style
+    let (display_value, value_style) = match &field.field_type {
+        crate::models::FieldType::Select => {
+            if field.value.is_empty() {
+                (
+                    "<Select Option>".to_string(),
+                    Style::default().fg(Color::DarkGray),
+                )
+            } else {
+                (field.value.clone(), Style::default().fg(Color::Cyan))
+            }
+        }
+        _ => {
+            if field.value.is_empty() {
+                ("<Empty>".to_string(), Style::default().fg(Color::DarkGray))
+            } else {
+                (field.value.clone(), Style::default().fg(Color::White))
+            }
+        }
     };
 
-    let paragraph = Paragraph::new(button_text)
-        .block(Block::default().borders(Borders::ALL).title("Actions"))
-        .style(style)
-        .wrap(Wrap { trim: true });
+    // Create the field label with validation indicator
+    let label_style = if !is_valid && field.is_required {
+        Style::default().fg(Color::Red)
+    } else {
+        Style::default().fg(Color::Green)
+    };
 
-    f.render_widget(paragraph, area);
+    let validation_indicator = if field.is_required && !is_valid {
+        " ❌"
+    } else if is_valid {
+        " ✓"
+    } else {
+        ""
+    };
+
+    // Field type indicator
+    let type_indicator = match field.field_type {
+        crate::models::FieldType::Select => " 📋",
+        crate::models::FieldType::Textarea => " 📝",
+        crate::models::FieldType::Email => " ✉️",
+        _ => " 📄",
+    };
+
+    // Background style for focused field
+    let background_style = if is_focused {
+        Style::default().bg(Color::DarkGray)
+    } else {
+        Style::default()
+    };
+
+    let line = Line::from(vec![
+        Span::styled(format!("{:18}", field.get_display_label()), label_style),
+        Span::raw(": "),
+        Span::styled(display_value, value_style.patch(background_style)),
+        Span::styled(type_indicator, Style::default().fg(Color::Blue)),
+        Span::styled(validation_indicator, Style::default()),
+    ]);
+
+    // Add dropdown options if it's a select field and focused
+    if is_focused && matches!(field.field_type, crate::models::FieldType::Select) {
+        let options = field.get_dropdown_options();
+        let options_text = if options.is_empty() {
+            "No options available".to_string()
+        } else {
+            format!("Press 1-{}: {}", options.len(), options.join(", "))
+        };
+
+        let options_line = Line::from(vec![
+            Span::raw("                    "),
+            Span::styled(options_text, Style::default().fg(Color::Gray)),
+        ]);
+
+        ListItem::new(vec![line, options_line])
+    } else {
+        ListItem::new(line)
+    }
 }
 
-/// Render the credentials input section
-fn render_credentials_section(f: &mut Frame, area: Rect, state: &AutomationState) {
-    let has_credentials = state.credentials.is_some();
+/// Render send button and authentication status
+fn render_send_section(
+    f: &mut Frame,
+    area: Rect,
+    state: &AutomationState,
+    auth_service: &AuthService,
+) {
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
 
-    let lines = if has_credentials {
-        vec![
-            Line::from(vec![
-                Span::raw("Username: "),
-                Span::styled("✓ Provided", Style::default().fg(Color::Green)),
-            ]),
-            Line::from(vec![
-                Span::raw("Password: "),
-                Span::styled("✓ Provided", Style::default().fg(Color::Green)),
-            ]),
-            Line::from(""),
-            Line::from(Span::styled(
-                "Press Delete to clear credentials",
-                Style::default().fg(Color::Gray),
-            )),
-        ]
+    // Left: Big prominent send button
+    render_send_button(f, chunks[0], state, auth_service);
+
+    // Right: Authentication and template status
+    render_status_info(f, chunks[1], state, auth_service);
+}
+
+/// Render the big prominent send button
+fn render_send_button(
+    f: &mut Frame,
+    area: Rect,
+    state: &AutomationState,
+    auth_service: &AuthService,
+) {
+    let is_valid = state.is_valid();
+    let has_auth = auth_service.has_credentials();
+    let is_running = state.is_running;
+
+    let (button_text, button_style) = if is_running {
+        (
+            "🤖 BROWSER AUTOMATION RUNNING...",
+            Style::default().fg(Color::Yellow),
+        )
+    } else if !is_valid {
+        (
+            "❌ FIX VALIDATION ERRORS FIRST",
+            Style::default().fg(Color::Red),
+        )
+    } else if !has_auth {
+        (
+            "🔐 PRESS SPACE TO LOGIN & SEND",
+            Style::default().fg(Color::Cyan),
+        )
     } else {
-        vec![
-            Line::from(Span::styled(
-                "No credentials provided",
-                Style::default().fg(Color::Red),
-            )),
-            Line::from(""),
-            Line::from("Add credential input functionality:"),
-            Line::from("• Username field"),
-            Line::from("• Password field"),
-            Line::from(""),
-            Line::from(Span::styled(
-                "For now, using hardcoded demo credentials",
-                Style::default().fg(Color::Yellow),
-            )),
-        ]
+        ("🚀 PRESS SPACE TO SEND", Style::default().fg(Color::Green))
     };
+
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(button_text, button_style)),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Space Bar or Ctrl+Enter to Send",
+            Style::default().fg(Color::Gray),
+        )),
+    ];
+
+    // Add validation errors if any
+    if !is_valid {
+        lines.push(Line::from(""));
+        let errors = state.get_validation_errors();
+        for error in errors.iter().take(1) {
+            // Show max 1 error to fit
+            lines.push(Line::from(Span::styled(
+                format!("• {}", error),
+                Style::default().fg(Color::Red),
+            )));
+        }
+    }
 
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Login Credentials")
-                .title_style(Style::default().fg(Color::Magenta)),
+                .title("SEND")
+                .title_style(Style::default().fg(Color::Yellow)),
         )
         .wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
 }
 
-/// Render the templates section
-fn render_templates_section(f: &mut Frame, area: Rect, state: &AutomationState) {
-    let items: Vec<ListItem> = state
-        .templates
-        .iter()
-        .enumerate()
-        .map(|(i, template)| {
-            let hotkey = format!("Ctrl+{}", i + 1);
-            let is_selected = state.selected_template == Some(i);
+/// Render status information
+fn render_status_info(
+    f: &mut Frame,
+    area: Rect,
+    state: &AutomationState,
+    auth_service: &AuthService,
+) {
+    let has_credentials = auth_service.has_credentials();
 
-            let style = if is_selected {
-                Style::default().fg(Color::Yellow)
-            } else {
-                Style::default()
-            };
+    let mut lines = vec![
+        Line::from(Span::styled("Status:", Style::default().fg(Color::Cyan))),
+        Line::from(""),
+    ];
 
-            let line = Line::from(vec![
-                Span::styled(format!("[{}] ", hotkey), Style::default().fg(Color::Gray)),
-                Span::styled(&template.name, style),
-            ]);
+    // Authentication status
+    if has_credentials {
+        let username = auth_service.get_username().unwrap_or_default();
+        lines.push(Line::from(vec![
+            Span::raw("Login: "),
+            Span::styled(username, Style::default().fg(Color::Green)),
+        ]));
+    } else {
+        lines.push(Line::from(vec![
+            Span::raw("Login: "),
+            Span::styled("Not logged in", Style::default().fg(Color::Red)),
+        ]));
+    }
 
-            ListItem::new(vec![
-                line,
-                Line::from(Span::styled(
-                    format!("  {}", template.description),
-                    Style::default().fg(Color::DarkGray),
-                )),
-            ])
-        })
-        .collect();
-
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title("Templates"))
-        .style(Style::default());
-
-    f.render_widget(list, area);
-}
-
-/// Render status information and action buttons
-fn render_status_and_actions(f: &mut Frame, area: Rect, state: &AutomationState) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(3)])
-        .split(area);
-
-    // Status info
-    render_status_info(f, chunks[0], state);
-
-    // Action buttons
-    render_action_buttons(f, chunks[1], state);
-}
-
-/// Render status and information
-fn render_status_info(f: &mut Frame, area: Rect, state: &AutomationState) {
-    let mut status_lines = vec![Line::from(Span::styled(
-        "Status:",
-        Style::default().fg(Color::Cyan),
-    ))];
-
+    // Template status
     if let Some(template) = state.get_selected_template() {
-        status_lines.push(Line::from(vec![
+        lines.push(Line::from(vec![
             Span::raw("Template: "),
             Span::styled(&template.name, Style::default().fg(Color::Green)),
         ]));
     } else {
-        status_lines.push(Line::from(Span::styled(
-            "No template selected",
-            Style::default().fg(Color::Gray),
-        )));
+        lines.push(Line::from(vec![
+            Span::raw("Template: "),
+            Span::styled("None", Style::default().fg(Color::Gray)),
+        ]));
     }
 
-    // Credentials status
-    let cred_status = if state.credentials.is_some() {
-        ("✓ Credentials set", Color::Green)
-    } else {
-        ("❌ No credentials", Color::Red)
-    };
-    status_lines.push(Line::from(vec![
-        Span::raw("Credentials: "),
-        Span::styled(cred_status.0, Style::default().fg(cred_status.1)),
-    ]));
-
-    status_lines.push(Line::from(vec![
-        Span::raw("Website: "),
-        Span::styled(&state.website_config.name, Style::default().fg(Color::Blue)),
-    ]));
-
-    let filled_fields = state
-        .fields
-        .iter()
-        .filter(|f| !f.value.trim().is_empty())
-        .count();
-    status_lines.push(Line::from(vec![
-        Span::raw("Progress: "),
+    // Field progress
+    let filled_fields = state.fields.iter().filter(|f| f.is_valid()).count();
+    lines.push(Line::from(vec![
+        Span::raw("Fields: "),
         Span::styled(
-            format!("{}/{} fields filled", filled_fields, state.fields.len()),
+            format!("{}/{}", filled_fields, state.fields.len()),
             if filled_fields == state.fields.len() {
                 Style::default().fg(Color::Green)
             } else {
@@ -300,44 +282,103 @@ fn render_status_info(f: &mut Frame, area: Rect, state: &AutomationState) {
         ),
     ]));
 
-    if state.is_running {
-        status_lines.push(Line::from(Span::styled(
-            "🤖 Browser automation in progress...",
-            Style::default().fg(Color::Yellow),
-        )));
-    }
-
-    let paragraph = Paragraph::new(status_lines)
-        .block(Block::default().borders(Borders::ALL).title("Status"))
+    let paragraph = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Info")
+                .title_style(Style::default().fg(Color::Magenta)),
+        )
         .wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
 }
 
-/// Render a login popup when credentials are needed
-pub fn render_login_popup(f: &mut Frame, area: Rect) {
-    let popup_area = centered_rect(50, 30, area);
+/// Render login popup modal
+pub fn render_login_popup(f: &mut Frame, area: Rect, app: &crate::app::App) {
+    let popup_area = centered_rect(50, 40, area);
 
     f.render_widget(Clear, popup_area);
 
-    let popup = Paragraph::new(vec![
-        Line::from("Login Required"),
-        Line::from(""),
-        Line::from("Username: [Enter username]"),
-        Line::from("Password: [Enter password]"),
-        Line::from(""),
-        Line::from("Press Enter to continue, Esc to cancel"),
-    ])
-    .block(
-        Block::default()
-            .title("Authentication")
-            .borders(Borders::ALL)
-            .style(Style::default().bg(Color::DarkGray)),
-    )
-    .style(Style::default().fg(Color::White))
-    .wrap(Wrap { trim: true });
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Title
+            Constraint::Length(3), // Username field
+            Constraint::Length(3), // Password field
+            Constraint::Length(3), // Error message (if any)
+            Constraint::Length(3), // Buttons
+        ])
+        .split(popup_area);
 
-    f.render_widget(popup, popup_area);
+    // Title
+    let title = Paragraph::new("🔐 Login Required")
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Authentication")
+                .title_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::DarkGray)),
+        )
+        .style(Style::default().fg(Color::White));
+    f.render_widget(title, chunks[0]);
+
+    // Username field
+    let username_text = if app.login_username.is_empty() {
+        "Enter username..."
+    } else {
+        &app.login_username
+    };
+    let username = Paragraph::new(username_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Username")
+                .style(Style::default().bg(Color::DarkGray)),
+        )
+        .style(Style::default().fg(Color::White));
+    f.render_widget(username, chunks[1]);
+
+    // Password field (masked)
+    let password_display = "*".repeat(app.login_password.len());
+    let password_text = if app.login_password.is_empty() {
+        "Enter password..."
+    } else {
+        &password_display
+    };
+    let password = Paragraph::new(password_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Password")
+                .style(Style::default().bg(Color::DarkGray)),
+        )
+        .style(Style::default().fg(Color::White));
+    f.render_widget(password, chunks[2]);
+
+    // Error message
+    if let Some(error) = &app.login_error {
+        let error_msg = Paragraph::new(error.as_str())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Error")
+                    .style(Style::default().bg(Color::DarkGray)),
+            )
+            .style(Style::default().fg(Color::Red));
+        f.render_widget(error_msg, chunks[3]);
+    }
+
+    // Instructions
+    let instructions = Paragraph::new("Enter to login, Esc to cancel")
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Controls")
+                .style(Style::default().bg(Color::DarkGray)),
+        )
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(instructions, chunks[4]);
 }
 
 /// Helper function to create a centered rectangle

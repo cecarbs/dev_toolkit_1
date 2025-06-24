@@ -26,13 +26,30 @@ impl BrowserEngine {
         // Send initial progress update
         self.log_progress("Starting browser automation...").await;
 
-        // For now, we'll just navigate to google.com as a proof of concept
-        // You can replace this entire function with your actual automation logic
+        // Switch to real browser automation to test UI responsiveness
+        // Comment out this line and uncomment the simple test if browser fails
         self.run_google_navigation_example().await?;
 
-        // TODO: Replace the above with your actual automation logic:
+        // Uncomment this line if you want to test without browser first:
+        // self.run_simple_test().await?;
+
+        // TODO: Replace with your actual automation logic:
         // self.run_actual_automation(fields, credentials, website_config).await?;
 
+        Ok(())
+    }
+
+    /// Simple test without browser to verify async system works
+    async fn run_simple_test(&self) -> Result<()> {
+        self.log_progress("Running simple async test...").await;
+
+        for i in 1..=5 {
+            self.log_progress(format!("Test step {}/5", i)).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+
+        self.log_progress("Simple test completed successfully!")
+            .await;
         Ok(())
     }
 
