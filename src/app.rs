@@ -84,6 +84,7 @@ pub struct App {
     pub login_username: String,
     pub login_password: String,
     pub login_error: Option<String>,
+    pub login_focused_field: usize, // 0 - username, 1 - password
 
     /// Whether the app should quit
     pub should_quit: bool,
@@ -129,6 +130,11 @@ pub struct App {
 
     /// Cursor position within the currently focused field
     pub form_field_cursor_index: usize,
+
+    /// Help dialog state
+    pub show_help_dialog: bool,
+    pub help_search_query: String,
+    pub help_selected_section: usize, // 0 = All, 1 = Global, 2 = Collections, etc.
 }
 
 impl App {
@@ -168,6 +174,7 @@ impl App {
             login_username: String::new(),
             login_password: String::new(),
             login_error: None,
+            login_focused_field: 0,
             should_quit: false,
             message_receiver: Arc::new(Mutex::new(message_receiver)),
             message_sender,
@@ -193,6 +200,9 @@ impl App {
             delete_confirmation_is_folder: false,
             delete_confirmation_contents: Vec::new(),
             input_mode: InputMode::Normal, // Prevent editing texting until explicitly in InputMode
+            show_help_dialog: false,
+            help_search_query: String::new(),
+            help_selected_section: 0,
             form_field_cursor_index: 0,
         };
 
@@ -334,6 +344,7 @@ impl App {
         self.login_username.clear();
         self.login_password.clear();
         self.login_error = None;
+        self.login_focused_field = 0; // Start with username focused
         self.log(LogLevel::Debug, "Login popup opened");
     }
 
@@ -343,35 +354,48 @@ impl App {
         self.login_username.clear();
         self.login_password.clear();
         self.login_error = None;
+        self.login_focused_field = 0;
         self.log(LogLevel::Debug, "Login popup closed");
     }
 
     /// Attempt to login with current form data
     pub fn attempt_login(&mut self) -> bool {
+        // Clear previous error
+        self.login_error = None;
+
         // Validate credentials format
-        match crate::services::AuthService::validate_credentials(
-            &self.login_username,
-            &self.login_password,
-        ) {
+        if self.login_username.trim().is_empty() {
+            self.login_error = Some("Username cannot be empty".to_string());
+            return false;
+        }
+
+        if self.login_password.is_empty() {
+            self.login_error = Some("Password cannot be empty".to_string());
+            return false;
+        }
+
+        if self.login_username.len() < 3 {
+            self.login_error = Some("Username must be at least 3 characters".to_string());
+            return false;
+        }
+
+        if self.login_password.len() < 3 {
+            self.login_error = Some("Password must be at least 3 characters".to_string());
+            return false;
+        }
+
+        // Store credentials in auth service
+        match self
+            .auth_service
+            .store_credentials(self.login_username.clone(), self.login_password.clone())
+        {
             Ok(()) => {
-                // Store credentials in auth service
-                match self
-                    .auth_service
-                    .store_credentials(self.login_username.clone(), self.login_password.clone())
-                {
-                    Ok(()) => {
-                        self.log(
-                            LogLevel::Success,
-                            format!("Logged in as: {}", self.login_username),
-                        );
-                        self.hide_login();
-                        true
-                    }
-                    Err(err) => {
-                        self.login_error = Some(err);
-                        false
-                    }
-                }
+                self.log(
+                    LogLevel::Success,
+                    format!("Logged in as: {}", self.login_username),
+                );
+                self.hide_login();
+                true
             }
             Err(err) => {
                 self.login_error = Some(err);
@@ -379,6 +403,40 @@ impl App {
             }
         }
     }
+
+    /// Attempt to login with current form data
+    // pub fn attempt_login(&mut self) -> bool {
+    //     // Validate credentials format
+    //     match crate::services::AuthService::validate_credentials(
+    //         &self.login_username,
+    //         &self.login_password,
+    //     ) {
+    //         Ok(()) => {
+    //             // Store credentials in auth service
+    //             match self
+    //                 .auth_service
+    //                 .store_credentials(self.login_username.clone(), self.login_password.clone())
+    //             {
+    //                 Ok(()) => {
+    //                     self.log(
+    //                         LogLevel::Success,
+    //                         format!("Logged in as: {}", self.login_username),
+    //                     );
+    //                     self.hide_login();
+    //                     true
+    //                 }
+    //                 Err(err) => {
+    //                     self.login_error = Some(err);
+    //                     false
+    //                 }
+    //             }
+    //         }
+    //         Err(err) => {
+    //             self.login_error = Some(err);
+    //             false
+    //         }
+    //     }
+    // }
 
     /// Start automation process (this will be called from Send button)
     pub async fn start_automation(&mut self) -> Result<()> {
@@ -1599,6 +1657,22 @@ impl App {
         self.input_mode = InputMode::Normal;
         self.reset_field_cursor();
         self.log(LogLevel::Debug, "Exited edit mode");
+    }
+
+    /// Show the help dialog
+    pub fn show_help_dialog(&mut self) {
+        self.show_help_dialog = true;
+        self.help_search_query.clear();
+        self.help_selected_section = 0;
+        self.log(LogLevel::Debug, "Help dialog opened");
+    }
+
+    /// Hide the help dialog
+    pub fn hide_help_dialog(&mut self) {
+        self.show_help_dialog = false;
+        self.help_search_query.clear();
+        self.help_selected_section = 0;
+        self.log(LogLevel::Debug, "Help dialog closed");
     }
 }
 

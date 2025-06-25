@@ -2,8 +2,8 @@ use crate::app::{App, AppMode, FocusedPane};
 use crate::ui::components::rename_dialog::render_rename_dialog;
 use crate::ui::components::{
     get_mode_indicator, render_automation_form, render_collections_tree,
-    render_delete_confirmation_dialog, render_folder_creation_dialog, render_logging_panel,
-    render_login_popup, render_status_line, render_template_creation_dialog,
+    render_delete_confirmation_dialog, render_folder_creation_dialog, render_help_dialog,
+    render_logging_panel, render_login_popup, render_status_line, render_template_creation_dialog,
 };
 use ratatui::{
     Frame,
@@ -37,7 +37,9 @@ pub fn render_app(f: &mut Frame, app: &App) {
     render_status_line(f, main_chunks[2], app);
 
     // Render modal dialogs (in order of priority - delete confirmation has the highest priority)
-    if app.show_delete_confirmation_dialog {
+    if app.show_help_dialog {
+        render_help_dialog(f, size, app);
+    } else if app.show_delete_confirmation_dialog {
         render_delete_confirmation_dialog(f, size, app);
     } else if app.show_login_popup {
         render_login_popup(f, size, app);

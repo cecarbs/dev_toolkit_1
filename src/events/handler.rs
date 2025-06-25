@@ -6,6 +6,9 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// Handle keyboard events and update app state accordingly
 pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> {
     // Handle dialogs first (in priority order)
+    if app.show_help_dialog {
+        return handle_help_dialog_keys(app, key_event).await;
+    }
     if app.show_delete_confirmation_dialog {
         return handle_delete_confirmation_keys(app, key_event).await;
     }
@@ -17,6 +20,9 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
     }
     if app.show_rename_dialog {
         return handle_rename_dialog_keys(app, key_event).await;
+    }
+    if app.show_login_popup {
+        return handle_login_dialog_keys(app, key_event).await;
     }
     // Global keybindings that work in all modes
     match key_event.code {
@@ -74,6 +80,10 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
                 app.log(LogLevel::Debug, "Focused form using VIM motions");
                 return Ok(());
             }
+        }
+        KeyCode::Char('?') => {
+            app.show_help_dialog();
+            return Ok(());
         }
         _ => {}
     }
@@ -593,25 +603,22 @@ async fn handle_normal_mode_keys(app: &mut App, key_event: KeyEvent) -> Result<(
         KeyCode::F(3) => {
             // Start automation
             if !app.automation_state.is_running {
+                // Check if we have credentials
                 if !app.auth_service.has_credentials() {
-                    if let Err(e) = app
-                        .auth_service
-                        .store_credentials("demo_user".to_string(), "demo_password".to_string())
-                    {
+                    // Show login popup - user must authenticate first
+                    app.show_login();
+                    app.log(
+                        LogLevel::Info,
+                        "Authentication required to start automation",
+                    );
+                } else {
+                    // We have credentials, start automation directly
+                    if let Err(e) = app.start_automation().await {
                         app.log(
                             LogLevel::Error,
-                            format!("Failed to store demo credentials: {}", e),
+                            format!("Failed to start automation: {}", e),
                         );
-                    } else {
-                        app.log(LogLevel::Info, "Using demo credentials for testing");
                     }
-                }
-
-                if let Err(e) = app.start_automation().await {
-                    app.log(
-                        LogLevel::Error,
-                        format!("Failed to start automation: {}", e),
-                    );
                 }
             } else {
                 app.log(LogLevel::Warn, "Automation is already running");
@@ -874,4 +881,134 @@ pub fn get_tree_help_text() -> Vec<String> {
         "  F12: Refresh tree from storage".to_string(),
         "  F1: Show this help".to_string(),
     ]
+}
+
+/// Handle keyboard events for the help dialog
+async fn handle_help_dialog_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Close help dialog
+        KeyCode::Esc | KeyCode::Char('?') => {
+            app.hide_help_dialog();
+        }
+
+        // Navigate sections
+        KeyCode::Tab => {
+            let max_sections = 6; // Update this if you add more sections
+            app.help_selected_section = (app.help_selected_section + 1) % max_sections;
+        }
+        KeyCode::BackTab => {
+            let max_sections = 6;
+            app.help_selected_section = if app.help_selected_section == 0 {
+                max_sections - 1
+            } else {
+                app.help_selected_section - 1
+            };
+        }
+
+        // Number keys for quick section access
+        KeyCode::Char('1') => app.help_selected_section = 1,
+        KeyCode::Char('2') => app.help_selected_section = 2,
+        KeyCode::Char('3') => app.help_selected_section = 3,
+        KeyCode::Char('4') => app.help_selected_section = 4,
+        KeyCode::Char('5') => app.help_selected_section = 5,
+        KeyCode::Char('0') => app.help_selected_section = 0, // All sections
+
+        // Search functionality
+        KeyCode::Char(c)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            app.help_search_query.push(c);
+        }
+        KeyCode::Backspace => {
+            app.help_search_query.pop();
+        }
+        KeyCode::Delete => {
+            app.help_search_query.clear();
+        }
+
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Handle keyboard events for the login dialog
+async fn handle_login_dialog_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Cancel login
+        KeyCode::Esc => {
+            app.hide_login();
+        }
+
+        // Attempt login
+        KeyCode::Enter => {
+            if app.attempt_login() {
+                // Login successful, dialog closed automatically
+                // Now actually start the automation
+                if let Err(e) = app.start_automation().await {
+                    app.log(
+                        LogLevel::Error,
+                        format!("Failed to start automation: {}", e),
+                    );
+                }
+            }
+            // If login failed, stay in dialog with error shown
+        }
+
+        // Navigate between username and password fields
+        KeyCode::Tab => {
+            app.login_focused_field = (app.login_focused_field + 1) % 2;
+        }
+        KeyCode::BackTab => {
+            app.login_focused_field = if app.login_focused_field == 0 { 1 } else { 0 };
+        }
+        KeyCode::Up => {
+            app.login_focused_field = if app.login_focused_field == 0 { 1 } else { 0 };
+        }
+        KeyCode::Down => {
+            app.login_focused_field = (app.login_focused_field + 1) % 2;
+        }
+
+        // Text input for focused field
+        KeyCode::Char(c)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            match app.login_focused_field {
+                0 => app.login_username.push(c),
+                1 => app.login_password.push(c),
+                _ => {}
+            }
+            // Clear error on new input
+            app.login_error = None;
+        }
+
+        // Backspace for text editing
+        KeyCode::Backspace => {
+            match app.login_focused_field {
+                0 => {
+                    app.login_username.pop();
+                }
+                1 => {
+                    app.login_password.pop();
+                }
+                _ => {}
+            }
+            // Clear error on edit
+            app.login_error = None;
+        }
+
+        // Clear current field
+        KeyCode::Delete => {
+            match app.login_focused_field {
+                0 => app.login_username.clear(),
+                1 => app.login_password.clear(),
+                _ => {}
+            }
+            app.login_error = None;
+        }
+
+        _ => {}
+    }
+
+    Ok(())
 }

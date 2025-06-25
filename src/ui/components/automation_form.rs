@@ -440,8 +440,8 @@ fn render_status_info(
     f.render_widget(paragraph, area);
 }
 
-/// Render login popup modal
-pub fn render_login_popup(f: &mut Frame, area: Rect, app: &crate::app::App) {
+/// Render login popup modal with proper focus indicators
+pub fn render_login_popup(f: &mut Frame, area: Rect, app: &App) {
     let popup_area = centered_rect(50, 40, area);
 
     f.render_widget(Clear, popup_area);
@@ -453,7 +453,7 @@ pub fn render_login_popup(f: &mut Frame, area: Rect, app: &crate::app::App) {
             Constraint::Length(3), // Username field
             Constraint::Length(3), // Password field
             Constraint::Length(3), // Error message (if any)
-            Constraint::Length(3), // Buttons
+            Constraint::Length(3), // Instructions
         ])
         .split(popup_area);
 
@@ -464,42 +464,91 @@ pub fn render_login_popup(f: &mut Frame, area: Rect, app: &crate::app::App) {
                 .borders(Borders::ALL)
                 .title("Authentication")
                 .title_style(Style::default().fg(Color::Cyan))
-                .style(Style::default().bg(Color::DarkGray)),
+                .style(Style::default().bg(Color::DarkGray))
+                .border_style(Style::default().fg(Color::Cyan)),
         )
         .style(Style::default().fg(Color::White));
     f.render_widget(title, chunks[0]);
 
-    // Username field
+    // Username field with focus indicator
     let username_text = if app.login_username.is_empty() {
         "Enter username..."
     } else {
         &app.login_username
     };
+
+    let username_focused = app.login_focused_field == 0;
+    let username_style = if username_focused {
+        Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let username_title = if username_focused {
+        "Username [FOCUSED]"
+    } else {
+        "Username"
+    };
+
     let username = Paragraph::new(username_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Username")
-                .style(Style::default().bg(Color::DarkGray)),
+                .title(username_title)
+                .title_style(if username_focused {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                })
+                .style(Style::default().bg(Color::DarkGray))
+                .border_style(if username_focused {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                }),
         )
-        .style(Style::default().fg(Color::White));
+        .style(username_style);
     f.render_widget(username, chunks[1]);
 
-    // Password field (masked)
+    // Password field with focus indicator (masked)
     let password_display = "*".repeat(app.login_password.len());
     let password_text = if app.login_password.is_empty() {
         "Enter password..."
     } else {
         &password_display
     };
+
+    let password_focused = app.login_focused_field == 1;
+    let password_style = if password_focused {
+        Style::default().fg(Color::Yellow).bg(Color::DarkGray)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    let password_title = if password_focused {
+        "Password [FOCUSED]"
+    } else {
+        "Password"
+    };
+
     let password = Paragraph::new(password_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Password")
-                .style(Style::default().bg(Color::DarkGray)),
+                .title(password_title)
+                .title_style(if password_focused {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                })
+                .style(Style::default().bg(Color::DarkGray))
+                .border_style(if password_focused {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::White)
+                }),
         )
-        .style(Style::default().fg(Color::White));
+        .style(password_style);
     f.render_widget(password, chunks[2]);
 
     // Error message
@@ -513,19 +562,125 @@ pub fn render_login_popup(f: &mut Frame, area: Rect, app: &crate::app::App) {
             )
             .style(Style::default().fg(Color::Red));
         f.render_widget(error_msg, chunks[3]);
+    } else {
+        // Show helpful tip when no error
+        let tip = Paragraph::new("Demo: any username/password with 3+ characters")
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Tip")
+                    .style(Style::default().bg(Color::DarkGray)),
+            )
+            .style(Style::default().fg(Color::Gray));
+        f.render_widget(tip, chunks[3]);
     }
 
     // Instructions
-    let instructions = Paragraph::new("Enter to login, Esc to cancel")
+    let instructions = vec![Line::from(vec![
+        Span::styled("Tab/↑↓", Style::default().fg(Color::Yellow)),
+        Span::raw(": Navigate fields  "),
+        Span::styled("Enter", Style::default().fg(Color::Green)),
+        Span::raw(": Login  "),
+        Span::styled("Esc", Style::default().fg(Color::Red)),
+        Span::raw(": Cancel"),
+    ])];
+
+    let help = Paragraph::new(instructions)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Controls")
                 .style(Style::default().bg(Color::DarkGray)),
         )
-        .style(Style::default().fg(Color::Gray));
-    f.render_widget(instructions, chunks[4]);
+        .style(Style::default().fg(Color::White));
+    f.render_widget(help, chunks[4]);
 }
+/// Render login popup modal
+// pub fn render_login_popup(f: &mut Frame, area: Rect, app: &crate::app::App) {
+//     let popup_area = centered_rect(50, 40, area);
+//
+//     f.render_widget(Clear, popup_area);
+//
+//     let chunks = Layout::default()
+//         .direction(Direction::Vertical)
+//         .constraints([
+//             Constraint::Length(3), // Title
+//             Constraint::Length(3), // Username field
+//             Constraint::Length(3), // Password field
+//             Constraint::Length(3), // Error message (if any)
+//             Constraint::Length(3), // Buttons
+//         ])
+//         .split(popup_area);
+//
+//     // Title
+//     let title = Paragraph::new("🔐 Login Required")
+//         .block(
+//             Block::default()
+//                 .borders(Borders::ALL)
+//                 .title("Authentication")
+//                 .title_style(Style::default().fg(Color::Cyan))
+//                 .style(Style::default().bg(Color::DarkGray)),
+//         )
+//         .style(Style::default().fg(Color::White));
+//     f.render_widget(title, chunks[0]);
+//
+//     // Username field
+//     let username_text = if app.login_username.is_empty() {
+//         "Enter username..."
+//     } else {
+//         &app.login_username
+//     };
+//     let username = Paragraph::new(username_text)
+//         .block(
+//             Block::default()
+//                 .borders(Borders::ALL)
+//                 .title("Username")
+//                 .style(Style::default().bg(Color::DarkGray)),
+//         )
+//         .style(Style::default().fg(Color::White));
+//     f.render_widget(username, chunks[1]);
+//
+//     // Password field (masked)
+//     let password_display = "*".repeat(app.login_password.len());
+//     let password_text = if app.login_password.is_empty() {
+//         "Enter password..."
+//     } else {
+//         &password_display
+//     };
+//     let password = Paragraph::new(password_text)
+//         .block(
+//             Block::default()
+//                 .borders(Borders::ALL)
+//                 .title("Password")
+//                 .style(Style::default().bg(Color::DarkGray)),
+//         )
+//         .style(Style::default().fg(Color::White));
+//     f.render_widget(password, chunks[2]);
+//
+//     // Error message
+//     if let Some(error) = &app.login_error {
+//         let error_msg = Paragraph::new(error.as_str())
+//             .block(
+//                 Block::default()
+//                     .borders(Borders::ALL)
+//                     .title("Error")
+//                     .style(Style::default().bg(Color::DarkGray)),
+//             )
+//             .style(Style::default().fg(Color::Red));
+//         f.render_widget(error_msg, chunks[3]);
+//     }
+//
+//     // Instructions
+//     let instructions = Paragraph::new("Enter to login, Esc to cancel")
+//         .block(
+//             Block::default()
+//                 .borders(Borders::ALL)
+//                 .title("Controls")
+//                 .style(Style::default().bg(Color::DarkGray)),
+//         )
+//         .style(Style::default().fg(Color::Gray));
+//     f.render_widget(instructions, chunks[4]);
+// }
 
 /// Helper function to create a centered rectangle
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
