@@ -24,6 +24,12 @@ pub enum FocusedPane {
     Logs,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputMode {
+    Normal,
+    Edit,
+}
+
 /// Messages that can be sent to the app from background tasks
 #[derive(Debug, Clone)]
 pub enum AppMessage {
@@ -117,6 +123,12 @@ pub struct App {
     pub delete_confirmation_item_path: String,
     pub delete_confirmation_is_folder: bool,
     pub delete_confirmation_contents: Vec<String>, // List of what will be deleted
+
+    /// Current input mode for form fields
+    pub input_mode: InputMode,
+
+    /// Cursor position within the currently focused field
+    pub form_field_cursor_index: usize,
 }
 
 impl App {
@@ -180,6 +192,8 @@ impl App {
             delete_confirmation_item_path: String::new(),
             delete_confirmation_is_folder: false,
             delete_confirmation_contents: Vec::new(),
+            input_mode: InputMode::Normal, // Prevent editing texting until explicitly in InputMode
+            form_field_cursor_index: 0,
         };
 
         app.log(LogLevel::Info, "Application started");
@@ -1512,6 +1526,79 @@ impl App {
             .count();
 
         (folders, templates)
+    }
+
+    // Add cursor movement methods
+    pub fn move_field_cursor_left(&mut self) {
+        if let Some(field) = self.automation_state.get_focused_field() {
+            let cursor_moved_left = self.form_field_cursor_index.saturating_sub(1);
+            self.form_field_cursor_index = cursor_moved_left.min(field.value.chars().count());
+        }
+    }
+
+    pub fn move_field_cursor_right(&mut self) {
+        if let Some(field) = self.automation_state.get_focused_field() {
+            let cursor_moved_right = self.form_field_cursor_index.saturating_add(1);
+            self.form_field_cursor_index = cursor_moved_right.min(field.value.chars().count());
+        }
+    }
+
+    pub fn insert_char_at_cursor(&mut self, c: char) {
+        if let Some(field) = self.automation_state.get_focused_field_mut() {
+            // Extract the current value first to avoid borrow checker issues
+            let current_value = field.value.clone();
+            let byte_index = Self::get_byte_index_from_cursor_static(
+                &current_value,
+                self.form_field_cursor_index,
+            );
+            field.value.insert(byte_index, c);
+            self.form_field_cursor_index += 1;
+        }
+    }
+
+    pub fn delete_char_at_cursor(&mut self) {
+        if self.form_field_cursor_index > 0 {
+            if let Some(field) = self.automation_state.get_focused_field_mut() {
+                let current_index = self.form_field_cursor_index;
+                let from_left_to_current_index = current_index - 1;
+
+                // Split string and rebuild without the character at cursor-1
+                let before_char_to_delete = field.value.chars().take(from_left_to_current_index);
+                let after_char_to_delete = field.value.chars().skip(current_index);
+
+                field.value = before_char_to_delete.chain(after_char_to_delete).collect();
+                self.move_field_cursor_left();
+            }
+        }
+    }
+
+    fn get_byte_index_from_cursor_static(text: &str, cursor_index: usize) -> usize {
+        text.char_indices()
+            .map(|(i, _)| i)
+            .nth(cursor_index)
+            .unwrap_or(text.len())
+    }
+
+    pub fn reset_field_cursor(&mut self) {
+        self.form_field_cursor_index = 0;
+    }
+
+    pub fn set_cursor_to_end_of_field(&mut self) {
+        if let Some(field) = self.automation_state.get_focused_field() {
+            self.form_field_cursor_index = field.value.chars().count();
+        }
+    }
+
+    pub fn enter_edit_mode(&mut self) {
+        self.input_mode = InputMode::Edit;
+        self.set_cursor_to_end_of_field(); // Start at end of existing text
+        self.log(LogLevel::Debug, "Entered edit mode");
+    }
+
+    pub fn exit_edit_mode(&mut self) {
+        self.input_mode = InputMode::Normal;
+        self.reset_field_cursor();
+        self.log(LogLevel::Debug, "Exited edit mode");
     }
 }
 

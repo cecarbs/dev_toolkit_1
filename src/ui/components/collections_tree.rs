@@ -35,13 +35,6 @@ pub fn render_collections_tree(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::White)
     };
 
-    // Get border thickness based on focus
-    let border_type = if is_focused {
-        BorderType::Double
-    } else {
-        BorderType::Plain
-    };
-
     // Get all visible nodes from the tree
     let visible_nodes = app.tree_state.get_visible_nodes();
 
@@ -75,26 +68,21 @@ pub fn render_collections_tree(f: &mut Frame, area: Rect, app: &App) {
         List::new(items)
     };
 
+    // Dynamic title based on focus
     let title = if is_focused {
-        ">>> Collections <<<"
+        "Collections [FOCUSED]"
     } else {
         "Collections"
-    };
-
-    let title_style = if is_focused {
-        Style::default().fg(Color::Blue)
-    } else {
-        Style::default().fg(Color::Gray)
     };
 
     let list_widget = list.block(
         Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .title_style(title_style)
-            .border_type(border_type)
+            .title_style(Style::default().fg(Color::Green))
             .border_style(border_style),
     );
+
     f.render_widget(list_widget, tree_area);
 
     // Render clipboard status if there's something in clipboard

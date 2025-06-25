@@ -1,6 +1,9 @@
-use crate::app::{App, FocusedPane};
+use crate::app::{App, FocusedPane, InputMode};
+use crate::models::{FieldType, FormField};
 use crate::modes::automation::AutomationState;
 use crate::services::AuthService;
+use ratatui::layout::{Margin, Position};
+use ratatui::style::Modifier;
 use ratatui::widgets::BorderType;
 use ratatui::{
     Frame,
@@ -31,120 +34,158 @@ pub fn render_automation_form(
 
     // Render send button and auth status
     render_send_section(f, chunks[1], state, auth_service);
+    //
+    // // Set cursor position when in edit mode
+    // if app.input_mode == InputMode::Edit && app.focused_pane == FocusedPane::Form {
+    //     if let Some(focused_field) = state.get_focused_field() {
+    //         // Calculate cursor position on screen
+    //         // This is a simplified version - you might need to adjust based on your exact layout
+    //         let field_y = area.y + 2 + state.focused_field as u16; // Adjust based on your layout
+    //         let field_x = area.x + 20 + app.form_field_cursor_index as u16; // 20 chars for label + ": "
+    //
+    //         f.set_cursor_position(Position::new(field_x, field_y));
+    //     }
+    // }
 }
 
-/// Render the form fields with proper focus indicators
+/// Render the form fields with proper focus indicators and cursor positioning
 fn render_form_fields(f: &mut Frame, area: Rect, state: &AutomationState, app: &App) {
-    let is_focused = app.focused_pane == FocusedPane::Form;
-
-    // // Get border style based on focus - make it obvious
-    // let border_style = Style::default().fg(Color::White);
-    // let title_style = Style::default().fg(Color::Green);
-
-    let field_items: Vec<ListItem> = state
-        .fields
-        .iter()
-        .enumerate()
-        .map(|(i, field)| render_field_item(field, i, state.focused_field))
-        .collect();
-
-    // Get title based on focus
-    let title = if is_focused {
-        ">>> Form Fields <<<"
-    } else {
-        "Form Fields"
-    };
-
-    // Get title style based on focus
-    let title_style = if is_focused {
-        Style::default().fg(Color::Blue)
-    } else {
-        Style::default().fg(Color::Gray)
-    };
-
     // Get border style based on focus
+    let is_focused = app.focused_pane == FocusedPane::Form;
     let border_style = if is_focused {
         Style::default().fg(Color::Blue)
     } else {
         Style::default().fg(Color::White)
     };
+    let title_style = Style::default().fg(Color::Green);
 
-    // Get border type based on focus
-    let border_type = if is_focused {
-        BorderType::Double
+    let field_items: Vec<ListItem> = state
+        .fields
+        .iter()
+        .enumerate()
+        .map(|(i, field)| render_field_item(field, i, state.focused_field, app))
+        .collect();
+
+    // Dynamic title based on focus and mode
+    let mode_indicator = if is_focused {
+        match app.input_mode {
+            InputMode::Normal => " [NORMAL]",
+            InputMode::Edit => " [EDIT]",
+        }
     } else {
-        BorderType::Plain
+        ""
     };
+
+    let title = format!("Form Fields{}", mode_indicator);
 
     let list = List::new(field_items).block(
         Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .border_type(border_type)
-            // .title("Form Fields (Tab/Shift+Tab to navigate, F6 to focus)")
             .title_style(title_style)
             .border_style(border_style),
     );
 
     f.render_widget(list, area);
+
+    // Set cursor position when in edit mode
+    if app.input_mode == InputMode::Edit && app.focused_pane == FocusedPane::Form {
+        if let Some(_focused_field) = state.get_focused_field() {
+            // Calculate cursor position on screen
+            let list_inner = area.inner(Margin {
+                horizontal: 1,
+                vertical: 1,
+            });
+
+            // Y position: list top + focused field index
+            let cursor_y = list_inner.y + state.focused_field as u16;
+
+            // X position: list left + label width + ": " + cursor index in field
+            let label_width = 18; // From your format string "{:18}"
+            let cursor_x = list_inner.x + label_width + 2 + app.form_field_cursor_index as u16;
+
+            f.set_cursor_position(Position::new(cursor_x, cursor_y));
+        }
+    }
 }
 
-/// Render a single form field item with appropriate input type
-fn render_field_item(
-    field: &crate::models::FormField,
+fn render_field_item<'a>(
+    field: &'a FormField,
     index: usize,
     focused_index: usize,
-) -> ListItem {
+    app: &App,
+) -> ListItem<'a> {
     let is_focused = index == focused_index;
+    let is_editing = is_focused && app.input_mode == InputMode::Edit;
     let is_valid = field.is_valid();
 
-    // Determine field display value and style
-    let (display_value, value_style) = match &field.field_type {
-        crate::models::FieldType::Select => {
+    // Display value and style
+    let (display_value, value_style) = if is_editing {
+        // Show current value with editing indicator
+        (
             if field.value.is_empty() {
-                (
-                    "<Select Option>".to_string(),
-                    Style::default().fg(Color::DarkGray),
-                )
+                "<Editing...>".to_string()
             } else {
-                (field.value.clone(), Style::default().fg(Color::Cyan))
+                field.value.clone()
+            },
+            Style::default().fg(Color::Yellow).bg(Color::DarkGray),
+        )
+    } else {
+        match &field.field_type {
+            FieldType::Select => {
+                if field.value.is_empty() {
+                    (
+                        "<Select Option>".to_string(),
+                        Style::default().fg(Color::DarkGray),
+                    )
+                } else {
+                    (field.value.clone(), Style::default().fg(Color::Cyan))
+                }
             }
-        }
-        _ => {
-            if field.value.is_empty() {
-                ("<Empty>".to_string(), Style::default().fg(Color::DarkGray))
-            } else {
-                (field.value.clone(), Style::default().fg(Color::White))
+            _ => {
+                if field.value.is_empty() {
+                    ("<Empty>".to_string(), Style::default().fg(Color::DarkGray))
+                } else {
+                    (field.value.clone(), Style::default().fg(Color::White))
+                }
             }
         }
     };
 
-    // Create the field label with validation indicator
+    // Label style with validation
     let label_style = if !is_valid && field.is_required {
         Style::default().fg(Color::Red)
-    } else {
+    } else if is_editing {
+        Style::default().fg(Color::Yellow)
+    } else if is_focused {
         Style::default().fg(Color::Green)
-    };
-
-    let validation_indicator = if field.is_required && !is_valid {
-        " ❌"
-    } else if is_valid {
-        " ✓"
     } else {
-        ""
+        Style::default().fg(Color::Gray)
     };
 
-    // Field type indicator
-    let type_indicator = match field.field_type {
-        crate::models::FieldType::Select => " 📋",
-        crate::models::FieldType::Textarea => " 📝",
-        crate::models::FieldType::Email => " ✉️",
-        _ => " 📄",
+    // Mode indicator
+    // let mode_indicator = if is_editing {
+    //     " [EDIT]"
+    // } else if is_focused {
+    //     " [SELECTED]"
+    // } else {
+    //     ""
+    // };
+
+    // In your field rendering, add a blinking indicator when editing
+    let mode_indicator = if is_editing {
+        Span::styled(" ", Style::default().add_modifier(Modifier::RAPID_BLINK))
+    } else if is_focused {
+        Span::styled(" ◀", Style::default().fg(Color::Cyan))
+    } else {
+        Span::raw("")
     };
 
     // Background style for focused field
-    let background_style = if is_focused {
+    let background_style = if is_editing {
         Style::default().bg(Color::DarkGray)
+    } else if is_focused {
+        Style::default().bg(Color::Blue)
     } else {
         Style::default()
     };
@@ -153,29 +194,100 @@ fn render_field_item(
         Span::styled(format!("{:18}", field.get_display_label()), label_style),
         Span::raw(": "),
         Span::styled(display_value, value_style.patch(background_style)),
-        Span::styled(type_indicator, Style::default().fg(Color::Blue)),
-        Span::styled(validation_indicator, Style::default()),
+        mode_indicator,
     ]);
 
-    // Add dropdown options if it's a select field and focused
-    if is_focused && matches!(field.field_type, crate::models::FieldType::Select) {
-        let options = field.get_dropdown_options();
-        let options_text = if options.is_empty() {
-            "No options available".to_string()
-        } else {
-            format!("Press 1-{}: {}", options.len(), options.join(", "))
-        };
-
-        let options_line = Line::from(vec![
-            Span::raw("                    "),
-            Span::styled(options_text, Style::default().fg(Color::Gray)),
-        ]);
-
-        ListItem::new(vec![line, options_line])
-    } else {
-        ListItem::new(line)
-    }
+    ListItem::new(line)
 }
+/// Render a single form field item with appropriate input type
+// fn render_field_item<'a>(
+//     field: &'a FormField,
+//     index: usize,
+//     focused_index: usize,
+//     app: &App,
+// ) -> ListItem<'a> {
+//     let is_focused = index == focused_index;
+//     let is_valid = field.is_valid();
+//     // let is_editing = is_focused && app.form_ed
+//
+//     // Determine field display value and style
+//     let (display_value, value_style) = match &field.field_type {
+//         crate::models::FieldType::Select => {
+//             if field.value.is_empty() {
+//                 (
+//                     "<Select Option>".to_string(),
+//                     Style::default().fg(Color::DarkGray),
+//                 )
+//             } else {
+//                 (field.value.clone(), Style::default().fg(Color::Cyan))
+//             }
+//         }
+//         _ => {
+//             if field.value.is_empty() {
+//                 ("<Empty>".to_string(), Style::default().fg(Color::DarkGray))
+//             } else {
+//                 (field.value.clone(), Style::default().fg(Color::White))
+//             }
+//         }
+//     };
+//
+//     // Create the field label with validation indicator
+//     let label_style = if !is_valid && field.is_required {
+//         Style::default().fg(Color::Red)
+//     } else {
+//         Style::default().fg(Color::Green)
+//     };
+//
+//     let validation_indicator = if field.is_required && !is_valid {
+//         " ❌"
+//     } else if is_valid {
+//         " ✓"
+//     } else {
+//         ""
+//     };
+//
+//     // Field type indicator
+//     let type_indicator = match field.field_type {
+//         crate::models::FieldType::Select => " 📋",
+//         crate::models::FieldType::Textarea => " 📝",
+//         crate::models::FieldType::Email => " ✉️",
+//         _ => " 📄",
+//     };
+//
+//     // Background style for focused field
+//     let background_style = if is_focused {
+//         Style::default().bg(Color::DarkGray)
+//     } else {
+//         Style::default()
+//     };
+//
+//     let line = Line::from(vec![
+//         Span::styled(format!("{:18}", field.get_display_label()), label_style),
+//         Span::raw(": "),
+//         Span::styled(display_value, value_style.patch(background_style)),
+//         Span::styled(type_indicator, Style::default().fg(Color::Blue)),
+//         Span::styled(validation_indicator, Style::default()),
+//     ]);
+//
+//     // Add dropdown options if it's a select field and focused
+//     if is_focused && matches!(field.field_type, crate::models::FieldType::Select) {
+//         let options = field.get_dropdown_options();
+//         let options_text = if options.is_empty() {
+//             "No options available".to_string()
+//         } else {
+//             format!("Press 1-{}: {}", options.len(), options.join(", "))
+//         };
+//
+//         let options_line = Line::from(vec![
+//             Span::raw("                    "),
+//             Span::styled(options_text, Style::default().fg(Color::Gray)),
+//         ]);
+//
+//         ListItem::new(vec![line, options_line])
+//     } else {
+//         ListItem::new(line)
+//     }
+// }
 
 /// Render send button and authentication status
 fn render_send_section(

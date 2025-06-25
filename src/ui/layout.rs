@@ -1,9 +1,9 @@
 use crate::app::{App, AppMode, FocusedPane};
 use crate::ui::components::rename_dialog::render_rename_dialog;
 use crate::ui::components::{
-    render_automation_form, render_collections_tree, render_delete_confirmation_dialog,
-    render_folder_creation_dialog, render_logging_panel, render_login_popup,
-    render_template_creation_dialog,
+    get_mode_indicator, render_automation_form, render_collections_tree,
+    render_delete_confirmation_dialog, render_folder_creation_dialog, render_logging_panel,
+    render_login_popup, render_status_line, render_template_creation_dialog,
 };
 use ratatui::{
     Frame,
@@ -23,6 +23,7 @@ pub fn render_app(f: &mut Frame, app: &App) {
         .constraints([
             Constraint::Length(3), // Header
             Constraint::Min(10),   // Main content
+            Constraint::Length(3), // Status line
         ])
         .split(size);
 
@@ -31,6 +32,9 @@ pub fn render_app(f: &mut Frame, app: &App) {
 
     // Render main content area
     render_main_content(f, main_chunks[1], app);
+
+    // Render status line
+    render_status_line(f, main_chunks[2], app);
 
     // Render modal dialogs (in order of priority - delete confirmation has the highest priority)
     if app.show_delete_confirmation_dialog {
@@ -46,9 +50,19 @@ pub fn render_app(f: &mut Frame, app: &App) {
     }
 }
 
-/// Render the header with mode tabs
+/// Render the header with mode tabs and indicators
 fn render_header(f: &mut Frame, area: Rect, app: &App) {
-    let mode_titles = vec!["Automation (F1)", "HTTP Client (F4)"];
+    let mode_titles = vec![
+        format!(
+            "Automation (F1){}",
+            if app.current_mode == AppMode::Automation {
+                get_mode_indicator(app)
+            } else {
+                String::new()
+            }
+        ),
+        "HTTP Client (F4)".to_string(),
+    ];
     let selected_tab = match app.current_mode {
         AppMode::Automation => 0,
         AppMode::Http => 1,
@@ -67,7 +81,6 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(tabs, area);
 }
-
 /// Main content layout controller
 fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
     if app.show_logs {
@@ -100,7 +113,7 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
                     vertical_chunks[0],
                     &app.automation_state,
                     &app.auth_service,
-                    &app,
+                    app,
                 );
             }
             AppMode::Http => {

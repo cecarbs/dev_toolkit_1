@@ -1,4 +1,4 @@
-use crate::app::{App, AppMode, FocusedPane};
+use crate::app::{App, AppMode, FocusedPane, InputMode};
 use crate::models::{FocusDirection, LogLevel, NodeType};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -57,6 +57,23 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
                 app.log(LogLevel::Debug, "Focused logs");
             }
             return Ok(());
+        }
+        KeyCode::Char('H') => {
+            if app.focused_pane == FocusedPane::Form {
+                app.focus_pane(FocusedPane::Collections);
+                app.log(
+                    LogLevel::Debug,
+                    "Focused collections tree using VIM motions",
+                );
+                return Ok(());
+            }
+        }
+        KeyCode::Char('L') => {
+            if app.focused_pane == FocusedPane::Collections {
+                app.focus_pane(FocusedPane::Form);
+                app.log(LogLevel::Debug, "Focused form using VIM motions");
+                return Ok(());
+            }
         }
         _ => {}
     }
@@ -308,63 +325,258 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
 
     Ok(())
 }
-/// TODO: rRemove the template selection
-/// Handle keyboard events for the form
+
 async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
-    // If logging panel is open and we're searching, handle search input
-    if app.show_logs && key_event.code != KeyCode::Esc {
+    // Handle log search when logs pane is focused
+    if app.focused_pane == FocusedPane::Logs && app.show_logs && key_event.code != KeyCode::Esc {
         return handle_log_search_keys(app, key_event);
     }
 
-    // Handle special key combinations FIRST before text input
+    // Handle keys based on input mode
+    match app.input_mode {
+        InputMode::Normal => handle_normal_mode_keys(app, key_event).await?,
+        InputMode::Edit => handle_edit_mode_keys(app, key_event).await?,
+    }
+
+    Ok(())
+}
+/// TODO: rRemove the template selection
+/// Handle keyboard events for the form
+// async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+//     // If logging panel is open and we're searching, handle search input
+//     // TODO: might not need this anymore if logs are on by default
+//     if app.focused_pane == FocusedPane::Logs && app.show_logs && key_event.code != KeyCode::Esc {
+//         return handle_log_search_keys(app, key_event);
+//     }
+//
+//     // Handle keys based on input mode
+//     match app.input_mode {
+//         InputMode::Normal => handle_normal_mode_keys(app, key_event).await,
+//         InputMode::Edit => handle_edit_mode_keys(app, key_event).await,
+//     }
+//
+//     // Handle special key combinations FIRST before text input
+//     match key_event.code {
+//         // Close logging panel
+//         KeyCode::Esc => {
+//             if app.show_logs {
+//                 app.show_logs = false;
+//                 app.log_search_query.clear();
+//                 app.log(LogLevel::Debug, "Closed logging panel");
+//             }
+//         }
+//
+//         // KeyCode::Backspace if app.form_field_editing && key_event.modifiers.is_empty() => app.log(
+//         //     LogLevel::Debug,
+//         //     "Backspace was pressed; implement code later",
+//         // ),
+//
+//         // KeyCode::Enter => {
+//         //     app.form_field_editing = true;
+//         //     app.log(LogLevel::Debug, "Enter key was pressed");
+//         // }
+//
+//         // Template selection - handle BEFORE text input
+//         // KeyCode::Char('1') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+//         //     app.log(LogLevel::Debug, "Ctrl+1 detected - applying template 1");
+//         //     {
+//         //         app.automation_state.selected_template = Some(0);
+//         //         app.automation_state.apply_selected_template();
+//         //     }
+//         //     app.log(LogLevel::Info, "Applied template: Quick Task");
+//         //     return Ok(());
+//         // }
+//         // KeyCode::Char('2') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+//         //     app.log(LogLevel::Debug, "Ctrl+2 detected - applying template 2");
+//         //     {
+//         //         app.automation_state.selected_template = Some(1);
+//         //         app.automation_state.apply_selected_template();
+//         //     }
+//         //     app.log(LogLevel::Info, "Applied template: Urgent Request");
+//         //     return Ok(());
+//         // }
+//         // KeyCode::Char('3') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+//         //     app.log(LogLevel::Debug, "Ctrl+3 detected - applying template 3");
+//         //     {
+//         //         app.automation_state.selected_template = Some(2);
+//         //         app.automation_state.apply_selected_template();
+//         //     }
+//         //     app.log(LogLevel::Info, "Applied template: Weekly Report");
+//         //     return Ok(());
+//         // }
+//
+//         // Create a new template from the current form
+//         // KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+//         //     app.show_template_creation_dialog();
+//         //     return Ok(());
+//         // }
+//
+//         // TODO: remove later
+//         // Set demo credentials manually (temporary hotkey)
+//         // KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+//         //     app.log(LogLevel::Debug, "Ctrl+C detected - setting credentials");
+//         //     if let Err(e) = app
+//         //         .auth_service
+//         //         .store_credentials("demo_user".to_string(), "demo_password".to_string())
+//         //     {
+//         //         app.log(
+//         //             LogLevel::Error,
+//         //             format!("Failed to store credentials: {}", e),
+//         //         );
+//         //     } else {
+//         //         app.log(LogLevel::Info, "Demo credentials set");
+//         //     }
+//         //     return Ok(());
+//         // }
+//
+//         // TODO: remove later
+//         // Clear credentials
+//         // KeyCode::Char('x') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+//         //     app.log(LogLevel::Debug, "Ctrl+X detected - clearing credentials");
+//         //     if let Err(e) = app.auth_service.clear_credentials() {
+//         //         app.log(
+//         //             LogLevel::Error,
+//         //             format!("Failed to clear credentials: {}", e),
+//         //         );
+//         //     } else {
+//         //         app.log(LogLevel::Info, "Credentials cleared");
+//         //     }
+//         //     return Ok(());
+//         // }
+//         //
+//         // Start automation
+//         // KeyCode::F(3) => {
+//         //     app.log(
+//         //         LogLevel::Debug,
+//         //         "F3 detected - attempting to start automation",
+//         //     );
+//         //     if !app.automation_state.is_running {
+//         //         // Check if we have credentials, if not set demo ones
+//         //         if !app.auth_service.has_credentials() {
+//         //             if let Err(e) = app
+//         //                 .auth_service
+//         //                 .store_credentials("demo_user".to_string(), "demo_password".to_string())
+//         //             {
+//         //                 app.log(
+//         //                     LogLevel::Error,
+//         //                     format!("Failed to store demo credentials: {}", e),
+//         //                 );
+//         //             } else {
+//         //                 app.log(LogLevel::Info, "Using demo credentials for testing");
+//         //             }
+//         //         }
+//         //
+//         //         if let Err(e) = app.start_automation().await {
+//         //             app.log(
+//         //                 LogLevel::Error,
+//         //                 format!("Failed to start automation: {}", e),
+//         //             );
+//         //         }
+//         //     } else {
+//         //         app.log(LogLevel::Warn, "Automation is already running");
+//         //     }
+//         //     return Ok(());
+//         // }
+//
+//         // Navigation between fields
+//         // KeyCode::Tab => {
+//         //     app.automation_state.focus_next_field();
+//         //     app.log(LogLevel::Debug, "Moved to next field");
+//         //     return Ok(());
+//         // }
+//         // KeyCode::BackTab => {
+//         //     app.automation_state.focus_prev_field();
+//         //     app.log(LogLevel::Debug, "Moved to previous field");
+//         //     return Ok(());
+//         // }
+//         //
+//         // // Clear current field
+//         // KeyCode::Delete => {
+//         //     let field_name = if let Some(field) = app.automation_state.get_focused_field() {
+//         //         field.name.clone()
+//         //     } else {
+//         //         String::new()
+//         //     };
+//         //
+//         //     if !field_name.is_empty() {
+//         //         if let Some(field) = app.automation_state.get_focused_field_mut() {
+//         //             field.value.clear();
+//         //         }
+//         //         app.log(LogLevel::Debug, format!("Cleared field: {}", field_name));
+//         //     }
+//         //     return Ok(());
+//         // }
+//         //
+//         // // Text input for the focused field
+//         // KeyCode::Char(c)
+//         //     if app.input_mode == InputMode::Edit && key_event.modifiers.is_empty()
+//         //         || key_event.modifiers == KeyModifiers::SHIFT =>
+//         // {
+//         //     if let Some(field) = app.automation_state.get_focused_field_mut() {
+//         //         field.value.push(c);
+//         //     }
+//         // }
+//         //
+//         // // Backspace for text editing
+//         // KeyCode::Backspace if key_event.modifiers.is_empty() => {
+//         //     if let Some(field) = app.automation_state.get_focused_field_mut() {
+//         //         field.value.pop();
+//         //     }
+//         // }
+//         //
+//         _ => {}
+//     }
+//
+//     Ok(())
+// }
+
+async fn handle_normal_mode_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
-        // Close logging panel
-        KeyCode::Esc => {
-            if app.show_logs {
-                app.show_logs = false;
-                app.log_search_query.clear();
-                app.log(LogLevel::Debug, "Closed logging panel");
+        // Enter edit mode
+        KeyCode::Enter => {
+            app.enter_edit_mode();
+        }
+
+        // Alternative: 'i' for insert mode (like Vim)
+        KeyCode::Char('i') => {
+            app.enter_edit_mode();
+        }
+
+        // Navigation between fields
+        KeyCode::Tab => {
+            app.automation_state.focus_next_field();
+            app.log(LogLevel::Debug, "Moved to next field");
+        }
+        KeyCode::BackTab => {
+            app.automation_state.focus_prev_field();
+            app.log(LogLevel::Debug, "Moved to previous field");
+        }
+
+        // Vim-style navigation
+        KeyCode::Char('j') => {
+            app.automation_state.focus_next_field();
+            app.log(LogLevel::Debug, "Moved to next field (vim style)");
+        }
+        KeyCode::Char('k') => {
+            app.automation_state.focus_prev_field();
+            app.log(LogLevel::Debug, "Moved to previous field (vim style)");
+        }
+
+        // Clear current field
+        KeyCode::Delete => {
+            if let Some(field) = app.automation_state.get_focused_field_mut() {
+                field.value.clear();
+                // app.log(LogLevel::Debug, format!("Cleared field: {}", field.name));
             }
         }
 
-        // Template selection - handle BEFORE text input
-        KeyCode::Char('1') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.log(LogLevel::Debug, "Ctrl+1 detected - applying template 1");
-            {
-                app.automation_state.selected_template = Some(0);
-                app.automation_state.apply_selected_template();
-            }
-            app.log(LogLevel::Info, "Applied template: Quick Task");
-            return Ok(());
-        }
-        KeyCode::Char('2') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.log(LogLevel::Debug, "Ctrl+2 detected - applying template 2");
-            {
-                app.automation_state.selected_template = Some(1);
-                app.automation_state.apply_selected_template();
-            }
-            app.log(LogLevel::Info, "Applied template: Urgent Request");
-            return Ok(());
-        }
-        KeyCode::Char('3') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.log(LogLevel::Debug, "Ctrl+3 detected - applying template 3");
-            {
-                app.automation_state.selected_template = Some(2);
-                app.automation_state.apply_selected_template();
-            }
-            app.log(LogLevel::Info, "Applied template: Weekly Report");
-            return Ok(());
-        }
-
-        // Create a new template from the current form
+        // Global shortcuts (work in normal mode)
         KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
             app.show_template_creation_dialog();
-            return Ok(());
         }
 
-        // Set demo credentials manually (temporary hotkey)
         KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.log(LogLevel::Debug, "Ctrl+C detected - setting credentials");
+            // Demo credentials
             if let Err(e) = app
                 .auth_service
                 .store_credentials("demo_user".to_string(), "demo_password".to_string())
@@ -376,31 +588,11 @@ async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             } else {
                 app.log(LogLevel::Info, "Demo credentials set");
             }
-            return Ok(());
         }
 
-        // Clear credentials
-        KeyCode::Char('x') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.log(LogLevel::Debug, "Ctrl+X detected - clearing credentials");
-            if let Err(e) = app.auth_service.clear_credentials() {
-                app.log(
-                    LogLevel::Error,
-                    format!("Failed to clear credentials: {}", e),
-                );
-            } else {
-                app.log(LogLevel::Info, "Credentials cleared");
-            }
-            return Ok(());
-        }
-
-        // Start automation
         KeyCode::F(3) => {
-            app.log(
-                LogLevel::Debug,
-                "F3 detected - attempting to start automation",
-            );
+            // Start automation
             if !app.automation_state.is_running {
-                // Check if we have credentials, if not set demo ones
                 if !app.auth_service.has_credentials() {
                     if let Err(e) = app
                         .auth_service
@@ -424,52 +616,6 @@ async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             } else {
                 app.log(LogLevel::Warn, "Automation is already running");
             }
-            return Ok(());
-        }
-
-        // Navigation between fields
-        KeyCode::Tab => {
-            app.automation_state.focus_next_field();
-            app.log(LogLevel::Debug, "Moved to next field");
-            return Ok(());
-        }
-        KeyCode::BackTab => {
-            app.automation_state.focus_prev_field();
-            app.log(LogLevel::Debug, "Moved to previous field");
-            return Ok(());
-        }
-
-        // Clear current field
-        KeyCode::Delete => {
-            let field_name = if let Some(field) = app.automation_state.get_focused_field() {
-                field.name.clone()
-            } else {
-                String::new()
-            };
-
-            if !field_name.is_empty() {
-                if let Some(field) = app.automation_state.get_focused_field_mut() {
-                    field.value.clear();
-                }
-                app.log(LogLevel::Debug, format!("Cleared field: {}", field_name));
-            }
-            return Ok(());
-        }
-
-        // Text input for the focused field
-        KeyCode::Char(c)
-            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
-        {
-            if let Some(field) = app.automation_state.get_focused_field_mut() {
-                field.value.push(c);
-            }
-        }
-
-        // Backspace for text editing
-        KeyCode::Backspace if key_event.modifiers.is_empty() => {
-            if let Some(field) = app.automation_state.get_focused_field_mut() {
-                field.value.pop();
-            }
         }
 
         _ => {}
@@ -478,6 +624,69 @@ async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+async fn handle_edit_mode_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Exit edit mode
+        KeyCode::Esc => {
+            app.exit_edit_mode();
+        }
+
+        // Text input
+        KeyCode::Char(c)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            app.insert_char_at_cursor(c);
+        }
+
+        // Backspace
+        KeyCode::Backspace if key_event.modifiers.is_empty() => {
+            app.delete_char_at_cursor();
+        }
+
+        // Cursor movement
+        KeyCode::Left => {
+            app.move_field_cursor_left();
+        }
+        KeyCode::Right => {
+            app.move_field_cursor_right();
+        }
+
+        // Move to start/end of field
+        KeyCode::Home => {
+            app.reset_field_cursor();
+        }
+        KeyCode::End => {
+            app.set_cursor_to_end_of_field();
+        }
+
+        // Navigate to next field (but stay in edit mode)
+        KeyCode::Tab => {
+            app.automation_state.focus_next_field();
+            app.set_cursor_to_end_of_field();
+            app.log(
+                LogLevel::Debug,
+                "Moved to next field (staying in edit mode)",
+            );
+        }
+        KeyCode::BackTab => {
+            app.automation_state.focus_prev_field();
+            app.set_cursor_to_end_of_field();
+            app.log(
+                LogLevel::Debug,
+                "Moved to previous field (staying in edit mode)",
+            );
+        }
+
+        // Global shortcuts that should work even in edit mode
+        KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.show_template_creation_dialog();
+        }
+
+        _ => {}
+    }
+
+    Ok(())
+}
 /// Handle keyboard events for log search functionality
 fn handle_log_search_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
