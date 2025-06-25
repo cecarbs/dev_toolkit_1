@@ -1,4 +1,3 @@
-// Folder creation dialog component (add to ui/components/folder_dialog.rs)
 use crate::app::App;
 use ratatui::{
     Frame,
@@ -8,9 +7,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-/// Render folder creation dialog
-pub fn render_folder_creation_dialog(f: &mut Frame, area: Rect, app: &App) {
-    let popup_area = centered_rect(50, 40, area);
+/// Render rename dialog
+pub fn render_rename_dialog(f: &mut Frame, area: Rect, app: &App) {
+    let popup_area = centered_rect(50, 35, area);
 
     f.render_widget(Clear, popup_area);
 
@@ -18,57 +17,57 @@ pub fn render_folder_creation_dialog(f: &mut Frame, area: Rect, app: &App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Title
-            Constraint::Length(3), // Name field
-            Constraint::Length(3), // Parent field
+            Constraint::Length(3), // Current name
+            Constraint::Length(3), // New name field
             Constraint::Length(3), // Error message (if any)
             Constraint::Length(3), // Instructions
         ])
         .split(popup_area);
 
+    let item_type = if app.rename_dialog_is_folder {
+        "Folder"
+    } else {
+        "Template"
+    };
+
     // Title
-    let title = Paragraph::new("📁 Create New Folder")
+    let title = Paragraph::new(format!("✏️ Rename {}", item_type))
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Folder Creation")
+                .title(format!("Rename {}", item_type))
                 .title_style(Style::default().fg(Color::Cyan))
                 .style(Style::default().bg(Color::DarkGray)),
         )
         .style(Style::default().fg(Color::White));
     f.render_widget(title, chunks[0]);
 
-    // Name field
-    let name = Paragraph::new(&*app.folder_dialog_name)
+    // Current name (read-only)
+    let current_name = Paragraph::new(&*app.rename_dialog_original_name)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Folder Name")
+                .title("Current Name")
+                .style(Style::default().bg(Color::DarkGray)),
+        )
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(current_name, chunks[1]);
+
+    // New name field (editable)
+    let new_name = Paragraph::new(&*app.rename_dialog_new_name)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("New Name")
                 .title_style(Style::default().fg(Color::Yellow))
                 .style(Style::default().bg(Color::DarkGray))
                 .border_style(Style::default().fg(Color::Yellow)),
         )
         .style(Style::default().fg(Color::White));
-    f.render_widget(name, chunks[1]);
-
-    // Parent field (read-only display)
-    let parent_display = if app.folder_dialog_parent.is_empty() {
-        "Root"
-    } else {
-        &app.folder_dialog_parent
-    };
-
-    let parent = Paragraph::new(parent_display)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Parent Folder")
-                .style(Style::default().bg(Color::DarkGray)),
-        )
-        .style(Style::default().fg(Color::Gray));
-    f.render_widget(parent, chunks[2]);
+    f.render_widget(new_name, chunks[2]);
 
     // Error message
-    if let Some(error) = &app.folder_dialog_error {
+    if let Some(error) = &app.rename_dialog_error {
         let error_msg = Paragraph::new(error.as_str())
             .block(
                 Block::default()
@@ -81,7 +80,7 @@ pub fn render_folder_creation_dialog(f: &mut Frame, area: Rect, app: &App) {
     }
 
     // Instructions
-    let instructions = Paragraph::new("Enter: Create folder  |  Esc: Cancel")
+    let instructions = Paragraph::new("Enter: Rename  |  Esc: Cancel")
         .block(
             Block::default()
                 .borders(Borders::ALL)

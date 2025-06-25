@@ -1,6 +1,8 @@
 use crate::app::{App, AppMode, FocusedPane};
+use crate::ui::components::rename_dialog::render_rename_dialog;
 use crate::ui::components::{
-    render_automation_form, render_collections_tree, render_logging_panel, render_login_popup,
+    render_automation_form, render_collections_tree, render_delete_confirmation_dialog,
+    render_folder_creation_dialog, render_logging_panel, render_login_popup,
     render_template_creation_dialog,
 };
 use ratatui::{
@@ -30,12 +32,17 @@ pub fn render_app(f: &mut Frame, app: &App) {
     // Render main content area
     render_main_content(f, main_chunks[1], app);
 
-    // Render login popup if shown (modal overlay)
-    if app.show_login_popup {
+    // Render modal dialogs (in order of priority - delete confirmation has the highest priority)
+    if app.show_delete_confirmation_dialog {
+        render_delete_confirmation_dialog(f, size, app);
+    } else if app.show_login_popup {
         render_login_popup(f, size, app);
-    }
-    if app.show_template_dialog {
+    } else if app.show_template_dialog {
         render_template_creation_dialog(f, size, app);
+    } else if app.show_folder_dialog {
+        render_folder_creation_dialog(f, size, app);
+    } else if app.show_rename_dialog {
+        render_rename_dialog(f, size, app);
     }
 }
 
@@ -93,6 +100,7 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
                     vertical_chunks[0],
                     &app.automation_state,
                     &app.auth_service,
+                    &app,
                 );
             }
             AppMode::Http => {
@@ -123,6 +131,7 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
                     horizontal_chunks[1],
                     &app.automation_state,
                     &app.auth_service,
+                    &app,
                 );
             }
             AppMode::Http => {

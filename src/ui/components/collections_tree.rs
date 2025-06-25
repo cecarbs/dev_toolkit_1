@@ -1,5 +1,7 @@
 use crate::app::{App, FocusedPane};
 use crate::models::{NodeType, TreeNode};
+use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::widgets::{BorderType, Paragraph};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -12,11 +14,32 @@ use ratatui::{
 pub fn render_collections_tree(f: &mut Frame, area: Rect, app: &App) {
     let is_focused = app.focused_pane == FocusedPane::Collections;
 
+    // Split area to show clipboard status if there's something in clipboard
+    let (tree_area, status_area) = if app.clipboard.is_some() {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(5),    // Tree
+                Constraint::Length(3), // Clipboard status
+            ])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+
     // Get border style based on focus
     let border_style = if is_focused {
         Style::default().fg(Color::Blue)
     } else {
         Style::default().fg(Color::White)
+    };
+
+    // Get border thickness based on focus
+    let border_type = if is_focused {
+        BorderType::Double
+    } else {
+        BorderType::Plain
     };
 
     // Get all visible nodes from the tree
@@ -38,7 +61,11 @@ pub fn render_collections_tree(f: &mut Frame, area: Rect, app: &App) {
             ))),
             ListItem::new(Line::from("")),
             ListItem::new(Line::from(Span::styled(
-                "Press Ctrl+N to create new template",
+                "Press Ctrl+N to create template",
+                Style::default().fg(Color::Gray),
+            ))),
+            ListItem::new(Line::from(Span::styled(
+                "Press Ctrl+F to create folder",
                 Style::default().fg(Color::Gray),
             ))),
         ];
@@ -49,24 +76,51 @@ pub fn render_collections_tree(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let title = if is_focused {
-        "Collections (FOCUSED)"
+        ">>> Collections <<<"
     } else {
         "Collections"
+    };
+
+    let title_style = if is_focused {
+        Style::default().fg(Color::Blue)
+    } else {
+        Style::default().fg(Color::Gray)
     };
 
     let list_widget = list.block(
         Block::default()
             .borders(Borders::ALL)
             .title(title)
-            .title_style(Style::default().fg(Color::Green))
+            .title_style(title_style)
+            .border_type(border_type)
             .border_style(border_style),
     );
+    f.render_widget(list_widget, tree_area);
 
-    f.render_widget(list_widget, area);
+    // Render clipboard status if there's something in clipboard
+    if let Some(status_area) = status_area {
+        render_clipboard_status(f, status_area, app);
+    }
+}
 
-    // Render focus indicator if this pane is focused
-    if is_focused {
-        render_tree_focus_indicator(f, area, &app);
+/// Render clipboard status bar
+fn render_clipboard_status(f: &mut Frame, area: Rect, app: &App) {
+    if let Some(status) = app.get_clipboard_status() {
+        let status_text = vec![Line::from(vec![
+            Span::styled("📋 ", Style::default().fg(Color::Yellow)),
+            Span::styled(status, Style::default().fg(Color::White)),
+            Span::styled(" | Press Ctrl+V to paste", Style::default().fg(Color::Gray)),
+        ])];
+
+        let status_widget = Paragraph::new(status_text).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Clipboard")
+                .title_style(Style::default().fg(Color::Yellow))
+                .border_style(Style::default().fg(Color::Yellow)),
+        );
+
+        f.render_widget(status_widget, area);
     }
 }
 
@@ -132,6 +186,69 @@ fn render_tree_node<'a>(node: &'a TreeNode, index: usize, app: &App) -> ListItem
 
     ListItem::new(line)
 }
+
+///// Render a single tree node as a list item
+//fn render_tree_node<'a>(node: &'a TreeNode, index: usize, app: &App) -> ListItem<'a> {
+//    let is_focused =
+//        app.focused_pane == FocusedPane::Collections && app.tree_state.focused_index == index;
+//    let is_selected = node.is_selected;
+//
+//    // Create indentation based on depth
+//    let indent = "  ".repeat(node.depth);
+//
+//    // Choose icon based on node type and expansion state
+//    let icon = node.get_icon();
+//
+//    // Choose colors based on state
+//    let (name_style, icon_style) = match (&node.node_type, is_selected, is_focused) {
+//        (NodeType::Folder, true, _) => (
+//            Style::default().fg(Color::Cyan),
+//            Style::default().fg(Color::Cyan),
+//        ),
+//        (NodeType::Template, true, _) => (
+//            Style::default().fg(Color::Green),
+//            Style::default().fg(Color::Green),
+//        ),
+//        (NodeType::Folder, false, true) => (
+//            Style::default().fg(Color::White).bg(Color::DarkGray),
+//            Style::default().fg(Color::Blue),
+//        ),
+//        (NodeType::Template, false, true) => (
+//            Style::default().fg(Color::White).bg(Color::DarkGray),
+//            Style::default().fg(Color::Blue),
+//        ),
+//        (NodeType::Folder, false, false) => (
+//            Style::default().fg(Color::Yellow),
+//            Style::default().fg(Color::Yellow),
+//        ),
+//        (NodeType::Template, false, false) => (
+//            Style::default().fg(Color::White),
+//            Style::default().fg(Color::White),
+//        ),
+//    };
+//
+//    // Add expand/collapse indicator for folders
+//    let expand_indicator = match node.node_type {
+//        NodeType::Folder if !node.children.is_empty() => {
+//            if node.is_expanded {
+//                " ▼"
+//            } else {
+//                " ▶"
+//            }
+//        }
+//        _ => "",
+//    };
+//
+//    let line = Line::from(vec![
+//        Span::raw(indent),
+//        Span::styled(icon, icon_style),
+//        Span::raw(" "),
+//        Span::styled(&node.name, name_style),
+//        Span::styled(expand_indicator, Style::default().fg(Color::Gray)),
+//    ]);
+//
+//    ListItem::new(line)
+//}
 
 /// Render focus indicator and help text when tree is focused
 fn render_tree_focus_indicator(f: &mut Frame, area: Rect, app: &App) {

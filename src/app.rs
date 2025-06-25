@@ -1,8 +1,11 @@
-use crate::models::{AppConfig, LogEntry, LogLevel, NodeType, TreeState};
+use crate::models::{
+    AppConfig, ClipboardItem, ClipboardOperation, LogEntry, LogLevel, NodeType, TreeState,
+};
 use crate::modes::automation::AutomationState;
 use crate::services::{AuthService, TemplateStorage};
 use anyhow::Result;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
@@ -97,6 +100,23 @@ pub struct App {
     pub folder_dialog_name: String,
     pub folder_dialog_parent: String,
     pub folder_dialog_error: Option<String>,
+
+    pub show_rename_dialog: bool,
+    pub rename_dialog_original_name: String,
+    pub rename_dialog_new_name: String,
+    pub rename_dialog_path: String,
+    pub rename_dialog_is_folder: bool,
+    pub rename_dialog_error: Option<String>,
+
+    /// Clipboard for cut/copy/paste operations
+    pub clipboard: Option<ClipboardItem>,
+
+    /// Folder deletion confirmation dialog
+    pub show_delete_confirmation_dialog: bool,
+    pub delete_confirmation_item_name: String,
+    pub delete_confirmation_item_path: String,
+    pub delete_confirmation_is_folder: bool,
+    pub delete_confirmation_contents: Vec<String>, // List of what will be deleted
 }
 
 impl App {
@@ -148,9 +168,20 @@ impl App {
             folder_dialog_name: String::new(),
             folder_dialog_parent: String::new(),
             folder_dialog_error: None,
+            show_rename_dialog: false,
+            rename_dialog_original_name: String::new(),
+            rename_dialog_new_name: String::new(),
+            rename_dialog_path: String::new(),
+            rename_dialog_is_folder: false,
+            rename_dialog_error: None,
+            clipboard: None,
+            show_delete_confirmation_dialog: false,
+            delete_confirmation_item_name: String::new(),
+            delete_confirmation_item_path: String::new(),
+            delete_confirmation_is_folder: false,
+            delete_confirmation_contents: Vec::new(),
         };
 
-        // Log initial startup message
         app.log(LogLevel::Info, "Application started");
         app.log(
             LogLevel::Info,
@@ -749,4 +780,746 @@ impl App {
 
         Ok(())
     }
+
+    /// Show the rename dialog for the currently focused node
+    pub fn show_rename_dialog(&mut self) {
+        if let Some(focused_node) = self.tree_state.get_focused_node() {
+            self.show_rename_dialog = true;
+            self.rename_dialog_original_name = focused_node.name.clone();
+            self.rename_dialog_new_name = focused_node.name.clone();
+            self.rename_dialog_path = focused_node.path.clone();
+            self.rename_dialog_is_folder = focused_node.node_type == NodeType::Folder;
+            self.rename_dialog_error = None;
+
+            let item_type = if self.rename_dialog_is_folder {
+                "folder"
+            } else {
+                "template"
+            };
+            self.log(
+                LogLevel::Debug,
+                format!(
+                    "Rename dialog opened for {}: {}",
+                    item_type, focused_node.name
+                ),
+            );
+        }
+    }
+
+    /// Hide the rename dialog
+    pub fn hide_rename_dialog(&mut self) {
+        self.show_rename_dialog = false;
+        self.rename_dialog_original_name.clear();
+        self.rename_dialog_new_name.clear();
+        self.rename_dialog_path.clear();
+        self.rename_dialog_is_folder = false;
+        self.rename_dialog_error = None;
+
+        self.log(LogLevel::Debug, "Rename dialog closed");
+    }
+
+    /// Perform the rename operation
+    pub async fn rename_item_from_dialog(&mut self) -> Result<()> {
+        // Validate new name
+        if let Err(error) = self.validate_rename(
+            &self.rename_dialog_new_name,
+            &self.rename_dialog_path,
+            self.rename_dialog_is_folder,
+        ) {
+            self.rename_dialog_error = Some(error);
+            return Ok(());
+        }
+
+        if self.rename_dialog_is_folder {
+            self.rename_folder().await
+        } else {
+            self.rename_template().await
+        }
+    }
+
+    /// Rename a folder
+    async fn rename_folder(&mut self) -> Result<()> {
+        let templates_dir = self.config.get_templates_directory();
+        let old_path = templates_dir.join(&self.rename_dialog_path);
+
+        // Calculate new path
+        let new_path = if let Some(parent_pos) = self.rename_dialog_path.rfind('/') {
+            let parent = &self.rename_dialog_path[..parent_pos];
+            format!("{}/{}", parent, self.rename_dialog_new_name)
+        } else {
+            self.rename_dialog_new_name.clone()
+        };
+        let new_full_path = templates_dir.join(&new_path);
+
+        match std::fs::rename(&old_path, &new_full_path) {
+            Ok(()) => {
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Renamed folder '{}' to '{}'",
+                        self.rename_dialog_original_name, self.rename_dialog_new_name
+                    ),
+                );
+
+                // Refresh tree and hide dialog
+                self.refresh_tree_from_storage().await?;
+                self.hide_rename_dialog();
+                Ok(())
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to rename folder: {}", e);
+                self.rename_dialog_error = Some(error_msg.clone());
+                self.log(LogLevel::Error, error_msg);
+                Ok(())
+            }
+        }
+    }
+
+    /// Rename a template
+    async fn rename_template(&mut self) -> Result<()> {
+        // Parse the template path
+        let (folder_path, _old_name) = if let Some(pos) = self.rename_dialog_path.rfind('/') {
+            (
+                &self.rename_dialog_path[..pos],
+                &self.rename_dialog_path[pos + 1..],
+            )
+        } else {
+            ("", self.rename_dialog_path.as_str())
+        };
+
+        let templates_dir = self.config.get_templates_directory();
+        let folder_dir = templates_dir.join(folder_path);
+
+        // Build old and new file paths
+        let old_filename = format!(
+            "{}.json",
+            sanitize_filename(&self.rename_dialog_original_name)
+        );
+        let new_filename = format!("{}.json", sanitize_filename(&self.rename_dialog_new_name));
+        let old_file_path = folder_dir.join(old_filename);
+        let new_file_path = folder_dir.join(new_filename);
+
+        // Load the template to update its internal name
+        match std::fs::read_to_string(&old_file_path) {
+            Ok(json_content) => {
+                let mut stored_template: crate::services::StoredTemplate =
+                    serde_json::from_str(&json_content)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse template: {}", e))?;
+
+                // Update the template name
+                stored_template.template.name = self.rename_dialog_new_name.clone();
+                stored_template.modified_at = chrono::Utc::now();
+
+                // Save with new name and delete old file
+                let updated_json = serde_json::to_string_pretty(&stored_template)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize template: {}", e))?;
+
+                std::fs::write(&new_file_path, updated_json)
+                    .map_err(|e| anyhow::anyhow!("Failed to write renamed template: {}", e))?;
+
+                std::fs::remove_file(&old_file_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to remove old template file: {}", e))?;
+
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Renamed template '{}' to '{}'",
+                        self.rename_dialog_original_name, self.rename_dialog_new_name
+                    ),
+                );
+
+                // Refresh tree and hide dialog
+                self.refresh_tree_from_storage().await?;
+                self.hide_rename_dialog();
+                Ok(())
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to read template file: {}", e);
+                self.rename_dialog_error = Some(error_msg.clone());
+                self.log(LogLevel::Error, error_msg);
+                Ok(())
+            }
+        }
+    }
+
+    /// Validate rename operation
+    fn validate_rename(
+        &self,
+        new_name: &str,
+        current_path: &str,
+        is_folder: bool,
+    ) -> Result<(), String> {
+        // Check if name is empty
+        if new_name.trim().is_empty() {
+            return Err("Name cannot be empty".to_string());
+        }
+
+        // Check if name is unchanged
+        if new_name == self.rename_dialog_original_name {
+            return Err("Name is unchanged".to_string());
+        }
+
+        // Check for invalid characters
+        let invalid_chars = ['/', '\\', ':', '*', '?', '"', '<', '>', '|'];
+        if new_name.chars().any(|c| invalid_chars.contains(&c)) {
+            return Err("Name contains invalid characters".to_string());
+        }
+
+        // Check if item with new name already exists in the same location
+        let templates_dir = self.config.get_templates_directory();
+
+        if is_folder {
+            // For folders, check if folder with new name exists
+            let parent_path = if let Some(parent_pos) = current_path.rfind('/') {
+                &current_path[..parent_pos]
+            } else {
+                ""
+            };
+
+            let new_path = if parent_path.is_empty() {
+                new_name.to_string()
+            } else {
+                format!("{}/{}", parent_path, new_name)
+            };
+
+            let check_path = templates_dir.join(new_path);
+            if check_path.exists() {
+                return Err("Folder with this name already exists".to_string());
+            }
+        } else {
+            // For templates, check if template file with new name exists
+            let folder_path = if let Some(pos) = current_path.rfind('/') {
+                &current_path[..pos]
+            } else {
+                ""
+            };
+
+            let folder_dir = templates_dir.join(folder_path);
+            let new_filename = format!("{}.json", sanitize_filename(new_name));
+            let check_path = folder_dir.join(new_filename);
+
+            if check_path.exists() {
+                return Err("Template with this name already exists".to_string());
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Cut the currently focused item to clipboard
+    pub fn cut_focused_item(&mut self) {
+        if let Some(focused_node) = self.tree_state.get_focused_node() {
+            let templates_dir = self.config.get_templates_directory();
+            let full_path = if focused_node.node_type == NodeType::Folder {
+                templates_dir.join(&focused_node.path)
+            } else {
+                // For templates, we need the .json file path
+                let (folder_path, template_name) = if let Some(pos) = focused_node.path.rfind('/') {
+                    (&focused_node.path[..pos], &focused_node.path[pos + 1..])
+                } else {
+                    ("", focused_node.path.as_str())
+                };
+                let filename = format!("{}.json", sanitize_filename(template_name));
+                templates_dir.join(folder_path).join(filename)
+            };
+
+            self.clipboard = Some(ClipboardItem {
+                operation: ClipboardOperation::Cut,
+                item_type: focused_node.node_type.clone(),
+                name: focused_node.name.clone(),
+                path: focused_node.path.clone(),
+                full_file_path: full_path,
+            });
+
+            self.log(
+                LogLevel::Info,
+                format!(
+                    "Cut {}: {}",
+                    if focused_node.node_type == NodeType::Folder {
+                        "folder"
+                    } else {
+                        "template"
+                    },
+                    focused_node.name
+                ),
+            );
+        }
+    }
+
+    /// Copy the currently focused item to clipboard
+    pub fn copy_focused_item(&mut self) {
+        if let Some(focused_node) = self.tree_state.get_focused_node() {
+            let templates_dir = self.config.get_templates_directory();
+            let full_path = if focused_node.node_type == NodeType::Folder {
+                templates_dir.join(&focused_node.path)
+            } else {
+                let (folder_path, template_name) = if let Some(pos) = focused_node.path.rfind('/') {
+                    (&focused_node.path[..pos], &focused_node.path[pos + 1..])
+                } else {
+                    ("", focused_node.path.as_str())
+                };
+                let filename = format!("{}.json", sanitize_filename(template_name));
+                templates_dir.join(folder_path).join(filename)
+            };
+
+            self.clipboard = Some(ClipboardItem {
+                operation: ClipboardOperation::Copy,
+                item_type: focused_node.node_type.clone(),
+                name: focused_node.name.clone(),
+                path: focused_node.path.clone(),
+                full_file_path: full_path,
+            });
+
+            self.log(
+                LogLevel::Info,
+                format!(
+                    "Copied {}: {}",
+                    if focused_node.node_type == NodeType::Folder {
+                        "folder"
+                    } else {
+                        "template"
+                    },
+                    focused_node.name
+                ),
+            );
+        }
+    }
+
+    /// Paste clipboard item to currently focused folder
+    pub async fn paste_clipboard_item(&mut self) -> Result<()> {
+        if let Some(clipboard_item) = &self.clipboard.clone() {
+            // Determine target folder
+            let target_folder = if let Some(focused_node) = self.tree_state.get_focused_node() {
+                match focused_node.node_type {
+                    NodeType::Folder => focused_node.path.clone(),
+                    NodeType::Template => {
+                        // Get parent folder of template
+                        if let Some(parent_pos) = focused_node.path.rfind('/') {
+                            focused_node.path[..parent_pos].to_string()
+                        } else {
+                            "".to_string()
+                        }
+                    }
+                }
+            } else {
+                "".to_string() // Root
+            };
+
+            match clipboard_item.operation {
+                ClipboardOperation::Cut => {
+                    self.move_item_to_folder(clipboard_item, &target_folder)
+                        .await?;
+                    self.clipboard = None; // Clear clipboard after cut operation
+                }
+                ClipboardOperation::Copy => {
+                    self.copy_item_to_folder(clipboard_item, &target_folder)
+                        .await?;
+                    // Keep clipboard for multiple paste operations
+                }
+            }
+        } else {
+            self.log(LogLevel::Warn, "Nothing in clipboard to paste");
+        }
+
+        Ok(())
+    }
+
+    /// Move an item to target folder (for cut operation)
+    async fn move_item_to_folder(
+        &mut self,
+        item: &ClipboardItem,
+        target_folder: &str,
+    ) -> Result<()> {
+        let templates_dir = self.config.get_templates_directory();
+
+        match item.item_type {
+            NodeType::Folder => {
+                // Calculate new folder path
+                let new_path = if target_folder.is_empty() {
+                    item.name.clone()
+                } else {
+                    format!("{}/{}", target_folder, item.name)
+                };
+                let new_full_path = templates_dir.join(&new_path);
+
+                // Check if target already exists
+                if new_full_path.exists() {
+                    self.log(
+                        LogLevel::Error,
+                        format!("Folder '{}' already exists in target location", item.name),
+                    );
+                    return Ok(());
+                }
+
+                // Move the folder
+                std::fs::rename(&item.full_file_path, &new_full_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to move folder: {}", e))?;
+
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Moved folder '{}' to '{}'",
+                        item.name,
+                        if target_folder.is_empty() {
+                            "Root"
+                        } else {
+                            target_folder
+                        }
+                    ),
+                );
+            }
+            NodeType::Template => {
+                // Calculate new template path
+                let filename = format!("{}.json", sanitize_filename(&item.name));
+                let target_dir = templates_dir.join(target_folder);
+                let new_file_path = target_dir.join(&filename);
+
+                // Create target directory if it doesn't exist
+                std::fs::create_dir_all(&target_dir)
+                    .map_err(|e| anyhow::anyhow!("Failed to create target directory: {}", e))?;
+
+                // Check if target file already exists
+                if new_file_path.exists() {
+                    self.log(
+                        LogLevel::Error,
+                        format!("Template '{}' already exists in target location", item.name),
+                    );
+                    return Ok(());
+                }
+
+                // Move the template file
+                std::fs::rename(&item.full_file_path, &new_file_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to move template: {}", e))?;
+
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Moved template '{}' to '{}'",
+                        item.name,
+                        if target_folder.is_empty() {
+                            "Root"
+                        } else {
+                            target_folder
+                        }
+                    ),
+                );
+            }
+        }
+
+        // Refresh tree to show changes
+        self.refresh_tree_from_storage().await?;
+        Ok(())
+    }
+
+    /// Copy an item to target folder (for copy operation)
+    async fn copy_item_to_folder(
+        &mut self,
+        item: &ClipboardItem,
+        target_folder: &str,
+    ) -> Result<()> {
+        let templates_dir = self.config.get_templates_directory();
+
+        match item.item_type {
+            NodeType::Folder => {
+                // For folders, we need to recursively copy the entire directory tree
+                let new_path = if target_folder.is_empty() {
+                    format!("{}_copy", item.name)
+                } else {
+                    format!("{}/{}_copy", target_folder, item.name)
+                };
+                let new_full_path = templates_dir.join(&new_path);
+
+                self.copy_directory_recursive(&item.full_file_path, &new_full_path)?;
+
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Copied folder '{}' to '{}'",
+                        item.name,
+                        if target_folder.is_empty() {
+                            "Root"
+                        } else {
+                            target_folder
+                        }
+                    ),
+                );
+            }
+            NodeType::Template => {
+                // Find a unique name for the copy
+                let base_name = format!("{}_copy", item.name);
+                let mut copy_name = base_name.clone();
+                let mut counter = 1;
+
+                let target_dir = templates_dir.join(target_folder);
+                std::fs::create_dir_all(&target_dir)
+                    .map_err(|e| anyhow::anyhow!("Failed to create target directory: {}", e))?;
+
+                // Find unique filename
+                while target_dir
+                    .join(format!("{}.json", sanitize_filename(&copy_name)))
+                    .exists()
+                {
+                    copy_name = format!("{}_{}", base_name, counter);
+                    counter += 1;
+                }
+
+                let filename = format!("{}.json", sanitize_filename(&copy_name));
+                let new_file_path = target_dir.join(&filename);
+
+                // Load and modify the template
+                let json_content = std::fs::read_to_string(&item.full_file_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to read template: {}", e))?;
+
+                let mut stored_template: crate::services::StoredTemplate =
+                    serde_json::from_str(&json_content)
+                        .map_err(|e| anyhow::anyhow!("Failed to parse template: {}", e))?;
+
+                // Update name and timestamps
+                stored_template.template.name = copy_name.clone();
+                stored_template.created_at = chrono::Utc::now();
+                stored_template.modified_at = chrono::Utc::now();
+                stored_template.last_used_at = None;
+
+                // Save the copy
+                let updated_json = serde_json::to_string_pretty(&stored_template)
+                    .map_err(|e| anyhow::anyhow!("Failed to serialize template: {}", e))?;
+
+                std::fs::write(&new_file_path, updated_json)
+                    .map_err(|e| anyhow::anyhow!("Failed to write template copy: {}", e))?;
+
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Copied template '{}' as '{}' to '{}'",
+                        item.name,
+                        copy_name,
+                        if target_folder.is_empty() {
+                            "Root"
+                        } else {
+                            target_folder
+                        }
+                    ),
+                );
+            }
+        }
+
+        // Refresh tree to show changes
+        self.refresh_tree_from_storage().await?;
+        Ok(())
+    }
+
+    /// Recursively copy a directory and all its contents
+    fn copy_directory_recursive(&self, src: &Path, dst: &Path) -> Result<()> {
+        if !src.exists() {
+            return Err(anyhow::anyhow!("Source directory does not exist"));
+        }
+
+        std::fs::create_dir_all(dst)
+            .map_err(|e| anyhow::anyhow!("Failed to create directory: {}", e))?;
+
+        for entry in std::fs::read_dir(src)? {
+            let entry = entry?;
+            let src_path = entry.path();
+            let dst_path = dst.join(entry.file_name());
+
+            if src_path.is_dir() {
+                self.copy_directory_recursive(&src_path, &dst_path)?;
+            } else {
+                std::fs::copy(&src_path, &dst_path)
+                    .map_err(|e| anyhow::anyhow!("Failed to copy file: {}", e))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Clear the clipboard
+    pub fn clear_clipboard(&mut self) {
+        if self.clipboard.is_some() {
+            self.clipboard = None;
+            self.log(LogLevel::Info, "Clipboard cleared");
+        }
+    }
+
+    /// Get clipboard status for UI display
+    pub fn get_clipboard_status(&self) -> Option<String> {
+        self.clipboard.as_ref().map(|item| {
+            let operation = match item.operation {
+                ClipboardOperation::Cut => "Cut",
+                ClipboardOperation::Copy => "Copied",
+            };
+            let item_type = if item.item_type == NodeType::Folder {
+                "folder"
+            } else {
+                "template"
+            };
+            format!("{} {}: {}", operation, item_type, item.name)
+        })
+    }
+    /// Show deletion confirmation dialog
+    pub fn show_delete_confirmation_dialog(
+        &mut self,
+        item_path: &str,
+        item_name: &str,
+        is_folder: bool,
+    ) {
+        self.show_delete_confirmation_dialog = true;
+        self.delete_confirmation_item_name = item_name.to_string();
+        self.delete_confirmation_item_path = item_path.to_string();
+        self.delete_confirmation_is_folder = is_folder;
+
+        // If it's a folder, scan its contents
+        if is_folder {
+            self.delete_confirmation_contents = self.scan_folder_contents(item_path);
+        } else {
+            self.delete_confirmation_contents = vec![];
+        }
+
+        let item_type = if is_folder { "folder" } else { "template" };
+        self.log(
+            LogLevel::Debug,
+            format!(
+                "Delete confirmation dialog opened for {}: {}",
+                item_type, item_name
+            ),
+        );
+    }
+
+    /// Hide deletion confirmation dialog
+    pub fn hide_delete_confirmation_dialog(&mut self) {
+        self.show_delete_confirmation_dialog = false;
+        self.delete_confirmation_item_name.clear();
+        self.delete_confirmation_item_path.clear();
+        self.delete_confirmation_is_folder = false;
+        self.delete_confirmation_contents.clear();
+
+        self.log(LogLevel::Debug, "Delete confirmation dialog closed");
+    }
+
+    /// Perform the confirmed deletion
+    pub async fn confirm_deletion(&mut self) -> Result<()> {
+        if self.delete_confirmation_is_folder {
+            self.delete_folder_confirmed(&self.delete_confirmation_item_path.clone())
+                .await
+        } else {
+            self.delete_template(&self.delete_confirmation_item_path.clone())
+                .await
+        }
+    }
+
+    /// Delete folder after confirmation
+    async fn delete_folder_confirmed(&mut self, folder_path: &str) -> Result<()> {
+        let templates_dir = self.config.get_templates_directory();
+        let full_folder_path = templates_dir.join(folder_path);
+
+        if !full_folder_path.exists() {
+            self.log(LogLevel::Error, "Folder no longer exists");
+            self.hide_delete_confirmation_dialog();
+            return Ok(());
+        }
+
+        // Recursively delete the folder and all its contents
+        match std::fs::remove_dir_all(&full_folder_path) {
+            Ok(()) => {
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Deleted folder '{}' and all its contents",
+                        self.delete_confirmation_item_name
+                    ),
+                );
+
+                // Refresh tree and hide dialog
+                self.refresh_tree_from_storage().await?;
+                self.hide_delete_confirmation_dialog();
+                Ok(())
+            }
+            Err(e) => {
+                let error_msg = format!("Failed to delete folder: {}", e);
+                self.log(LogLevel::Error, error_msg);
+                self.hide_delete_confirmation_dialog();
+                Ok(())
+            }
+        }
+    }
+
+    /// Scan folder contents for confirmation dialog
+    fn scan_folder_contents(&self, folder_path: &str) -> Vec<String> {
+        let templates_dir = self.config.get_templates_directory();
+        let full_folder_path = templates_dir.join(folder_path);
+
+        let mut contents = Vec::new();
+
+        if let Ok(entries) = self.scan_directory_recursive(&full_folder_path, folder_path) {
+            contents = entries;
+        }
+
+        contents
+    }
+
+    /// Recursively scan directory for contents display
+    fn scan_directory_recursive(&self, dir: &Path, relative_path: &str) -> Result<Vec<String>> {
+        let mut items = Vec::new();
+
+        if !dir.exists() {
+            return Ok(items);
+        }
+
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().to_string();
+
+            if path.is_dir() {
+                // Add folder
+                let folder_path = if relative_path.is_empty() {
+                    name.clone()
+                } else {
+                    format!("{}/{}", relative_path, name)
+                };
+                items.push(format!("📁 {}", folder_path));
+
+                // Recursively scan subfolder
+                if let Ok(sub_items) = self.scan_directory_recursive(&path, &folder_path) {
+                    items.extend(sub_items);
+                }
+            } else if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                // Add template (remove .json extension for display)
+                let template_name = path.file_stem().and_then(|s| s.to_str()).unwrap_or(&name);
+                let template_path = if relative_path.is_empty() {
+                    template_name.to_string()
+                } else {
+                    format!("{}/{}", relative_path, template_name)
+                };
+                items.push(format!("📄 {}", template_path));
+            }
+        }
+
+        Ok(items)
+    }
+
+    /// Get count of items that will be deleted
+    pub fn get_deletion_count(&self) -> (usize, usize) {
+        let folders = self
+            .delete_confirmation_contents
+            .iter()
+            .filter(|item| item.starts_with("📁"))
+            .count();
+        let templates = self
+            .delete_confirmation_contents
+            .iter()
+            .filter(|item| item.starts_with("📄"))
+            .count();
+
+        (folders, templates)
+    }
+}
+
+fn sanitize_filename(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c => c,
+        })
+        .collect()
 }

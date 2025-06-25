@@ -1,6 +1,7 @@
-use crate::app::FocusedPane;
+use crate::app::{App, FocusedPane};
 use crate::modes::automation::AutomationState;
 use crate::services::AuthService;
+use ratatui::widgets::BorderType;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -15,6 +16,7 @@ pub fn render_automation_form(
     area: Rect,
     state: &AutomationState,
     auth_service: &AuthService,
+    app: &App,
 ) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -25,17 +27,19 @@ pub fn render_automation_form(
         .split(area);
 
     // Render form fields
-    render_form_fields(f, chunks[0], state);
+    render_form_fields(f, chunks[0], state, app);
 
     // Render send button and auth status
     render_send_section(f, chunks[1], state, auth_service);
 }
 
 /// Render the form fields with proper focus indicators
-fn render_form_fields(f: &mut Frame, area: Rect, state: &AutomationState) {
-    // Get border style based on focus - make it obvious
-    let border_style = Style::default().fg(Color::White);
-    let title_style = Style::default().fg(Color::Green);
+fn render_form_fields(f: &mut Frame, area: Rect, state: &AutomationState, app: &App) {
+    let is_focused = app.focused_pane == FocusedPane::Form;
+
+    // // Get border style based on focus - make it obvious
+    // let border_style = Style::default().fg(Color::White);
+    // let title_style = Style::default().fg(Color::Green);
 
     let field_items: Vec<ListItem> = state
         .fields
@@ -44,10 +48,40 @@ fn render_form_fields(f: &mut Frame, area: Rect, state: &AutomationState) {
         .map(|(i, field)| render_field_item(field, i, state.focused_field))
         .collect();
 
+    // Get title based on focus
+    let title = if is_focused {
+        ">>> Form Fields <<<"
+    } else {
+        "Form Fields"
+    };
+
+    // Get title style based on focus
+    let title_style = if is_focused {
+        Style::default().fg(Color::Blue)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
+
+    // Get border style based on focus
+    let border_style = if is_focused {
+        Style::default().fg(Color::Blue)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
+    // Get border type based on focus
+    let border_type = if is_focused {
+        BorderType::Double
+    } else {
+        BorderType::Plain
+    };
+
     let list = List::new(field_items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title("Form Fields (Tab/Shift+Tab to navigate, F6 to focus)")
+            .title(title)
+            .border_type(border_type)
+            // .title("Form Fields (Tab/Shift+Tab to navigate, F6 to focus)")
             .title_style(title_style)
             .border_style(border_style),
     );

@@ -5,9 +5,18 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Handle keyboard events and update app state accordingly
 pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> {
-    // Handle template creation dialog first if it's open
+    // Handle dialogs first (in priority order)
+    if app.show_delete_confirmation_dialog {
+        return handle_delete_confirmation_keys(app, key_event).await;
+    }
     if app.show_template_dialog {
         return handle_template_dialog_keys(app, key_event).await;
+    }
+    if app.show_folder_dialog {
+        return handle_folder_dialog_keys(app, key_event).await;
+    }
+    if app.show_rename_dialog {
+        return handle_rename_dialog_keys(app, key_event).await;
     }
     // Global keybindings that work in all modes
     match key_event.code {
@@ -144,7 +153,6 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
 
         // Expand/collapse or load template
         KeyCode::Enter => {
-            // Extract the data we need first to avoid borrow checker issues
             let node_info = app
                 .tree_state
                 .get_focused_node()
@@ -153,16 +161,13 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             if let Some((path, name, node_type)) = node_info {
                 match node_type {
                     NodeType::Folder => {
-                        // Toggle folder expansion
                         app.tree_state.toggle_expansion(&path);
                         app.log(LogLevel::Debug, format!("Tree: toggled folder {}", name));
                     }
                     NodeType::Template => {
-                        // Load template into form
                         if let Err(e) = app.load_template_into_form(&path).await {
                             app.log(LogLevel::Error, format!("Failed to load template: {}", e));
                         } else {
-                            // Switch focus to form after loading
                             app.focus_pane(FocusedPane::Form);
                         }
                     }
@@ -170,9 +175,8 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             }
         }
 
-        // Just toggle expansion (don't load template)
+        // Toggle expansion only
         KeyCode::Char(' ') => {
-            // Extract the data we need first, then drop the immutable borrow
             let folder_info = app
                 .tree_state
                 .get_focused_node()
@@ -185,9 +189,8 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             }
         }
 
-        // Select node (for future operations)
+        // Select node
         KeyCode::Char('s') => {
-            // Extract the data we need first to avoid borrow checker issues
             let node_info = app
                 .tree_state
                 .get_focused_node()
@@ -199,30 +202,94 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             }
         }
 
-        // Create new template from current form - Open dialog
+        // === CREATION OPERATIONS ===
+
+        // Create new template from form
         KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
             app.show_template_creation_dialog();
         }
 
-        // Delete selected template/folder (with confirmation)
-        KeyCode::Delete => {
-            // Extract the data we need first to avoid borrow checker issues
-            let template_info = app
-                .tree_state
-                .get_focused_node()
-                .filter(|node| node.node_type == NodeType::Template)
-                .map(|node| (node.path.clone(), node.name.clone()));
+        // Create new folder
+        KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.show_folder_creation_dialog();
+        }
 
-            if let Some((template_path, name)) = template_info {
-                if let Err(e) = app.delete_template(&template_path).await {
-                    app.log(LogLevel::Error, format!("Failed to delete template: {}", e));
-                } else {
-                    app.log(LogLevel::Success, format!("Deleted template: {}", name));
-                }
+        // === RENAME OPERATION ===
+
+        // Rename focused item (F2 is standard rename shortcut)
+        KeyCode::F(2) => {
+            app.show_rename_dialog();
+        }
+
+        // Alternative rename with R key
+        KeyCode::Char('r') => {
+            app.show_rename_dialog();
+        }
+
+        // === CLIPBOARD OPERATIONS ===
+
+        // Cut (Ctrl+X)
+        KeyCode::Char('x') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.cut_focused_item();
+        }
+
+        // Copy (Ctrl+C)
+        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.copy_focused_item();
+        }
+
+        // Paste (Ctrl+V)
+        KeyCode::Char('v') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Err(e) = app.paste_clipboard_item().await {
+                app.log(LogLevel::Error, format!("Failed to paste: {}", e));
             }
         }
 
-        // Refresh tree from storage
+        // Clear clipboard (Ctrl+Shift+C)
+        KeyCode::Char('C') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.clear_clipboard();
+        }
+
+        // === DELETE OPERATION ===
+
+        // Delete selected item
+        // KeyCode::Delete => {
+        //     let item_info = app
+        //         .tree_state
+        //         .get_focused_node()
+        //         .map(|node| (node.path.clone(), node.name.clone(), node.node_type.clone()));
+        //
+        //     if let Some((template_path, name, node_type)) = item_info {
+        //         match node_type {
+        //             NodeType::Template => {
+        //                 if let Err(e) = app.delete_template(&template_path).await {
+        //                     app.log(LogLevel::Error, format!("Failed to delete template: {}", e));
+        //                 }
+        //             }
+        //             NodeType::Folder => {
+        //                 // TODO: Implement folder deletion (requires confirmation)
+        //                 app.log(LogLevel::Warn, "Folder deletion not yet implemented");
+        //             }
+        //         }
+        //     }
+        // }
+
+        // Delete selected item (shows confirmation dialog)
+        KeyCode::Delete => {
+            let item_info = app
+                .tree_state
+                .get_focused_node()
+                .map(|node| (node.path.clone(), node.name.clone(), node.node_type.clone()));
+
+            if let Some((item_path, name, node_type)) = item_info {
+                let is_folder = node_type == NodeType::Folder;
+                app.show_delete_confirmation_dialog(&item_path, &name, is_folder);
+            }
+        }
+
+        // === UTILITY OPERATIONS ===
+
+        // Refresh tree
         KeyCode::F(12) => {
             if let Err(e) = app.refresh_tree_from_storage().await {
                 app.log(LogLevel::Error, format!("Failed to refresh tree: {}", e));
@@ -231,12 +298,17 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             }
         }
 
+        // Show help
+        KeyCode::F(1) => {
+            app.log(LogLevel::Info, "Tree Help: ↑/↓=Navigate, Enter=Load/Expand, Space=Toggle, Ctrl+N=New Template, Ctrl+F=New Folder, F2/R=Rename, Ctrl+X/C/V=Cut/Copy/Paste, Del=Delete, F12=Refresh");
+        }
+
         _ => {}
     }
 
     Ok(())
 }
-
+/// TODO: rRemove the template selection
 /// Handle keyboard events for the form
 async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
     // If logging panel is open and we're searching, handle search input
@@ -281,6 +353,12 @@ async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
                 app.automation_state.apply_selected_template();
             }
             app.log(LogLevel::Info, "Applied template: Weekly Report");
+            return Ok(());
+        }
+
+        // Create a new template from the current form
+        KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.show_template_creation_dialog();
             return Ok(());
         }
 
@@ -379,7 +457,9 @@ async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
         }
 
         // Text input for the focused field
-        KeyCode::Char(c) if key_event.modifiers.is_empty() => {
+        KeyCode::Char(c)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
             if let Some(field) = app.automation_state.get_focused_field_mut() {
                 field.value.push(c);
             }
@@ -469,4 +549,120 @@ pub fn get_help_text(app: &App) -> Vec<String> {
     }
 
     help
+}
+
+/// Handle keyboard events for the delete confirmation dialog
+async fn handle_delete_confirmation_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Cancel deletion
+        KeyCode::Esc => {
+            app.hide_delete_confirmation_dialog();
+        }
+        // Confirm deletion
+        KeyCode::Enter => {
+            if let Err(e) = app.confirm_deletion().await {
+                app.log(LogLevel::Error, format!("Failed to delete: {}", e));
+            }
+        }
+        _ => {
+            // Ignore other keys in confirmation dialog
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle keyboard events for the folder creation dialog
+async fn handle_folder_dialog_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        KeyCode::Esc => {
+            app.hide_folder_creation_dialog();
+        }
+        KeyCode::Enter => {
+            if let Err(e) = app.create_folder_from_dialog().await {
+                app.log(LogLevel::Error, format!("Failed to create folder: {}", e));
+            }
+        }
+        KeyCode::Char(c)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            app.folder_dialog_name.push(c);
+            app.folder_dialog_error = None; // Clear error on new input
+        }
+        KeyCode::Backspace
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            app.folder_dialog_name.pop();
+            app.folder_dialog_error = None;
+        }
+        KeyCode::Delete => {
+            app.folder_dialog_name.clear();
+            app.folder_dialog_error = None;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Handle keyboard events for the rename dialog
+async fn handle_rename_dialog_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        KeyCode::Esc => {
+            app.hide_rename_dialog();
+        }
+        KeyCode::Enter => {
+            if let Err(e) = app.rename_item_from_dialog().await {
+                app.log(LogLevel::Error, format!("Failed to rename: {}", e));
+            }
+        }
+        KeyCode::Char(c)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            app.rename_dialog_new_name.push(c);
+            app.rename_dialog_error = None; // Clear error on new input
+        }
+        KeyCode::Backspace
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            app.rename_dialog_new_name.pop();
+            app.rename_dialog_error = None;
+        }
+        KeyCode::Delete => {
+            app.rename_dialog_new_name.clear();
+            app.rename_dialog_error = None;
+        }
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Updated help text with all new commands
+pub fn get_tree_help_text() -> Vec<String> {
+    vec![
+        "Collections Tree Navigation:".to_string(),
+        "  ↑/↓: Navigate tree".to_string(),
+        "  Enter: Load template or expand folder".to_string(),
+        "  Space: Toggle folder expansion".to_string(),
+        "  S: Select node".to_string(),
+        "".to_string(),
+        "Creation:".to_string(),
+        "  Ctrl+N: Create template from form".to_string(),
+        "  Ctrl+F: Create new folder".to_string(),
+        "".to_string(),
+        "Editing:".to_string(),
+        "  F2 or R: Rename selected item".to_string(),
+        "  Del: Delete selected item".to_string(),
+        "".to_string(),
+        "Clipboard:".to_string(),
+        "  Ctrl+X: Cut item".to_string(),
+        "  Ctrl+C: Copy item".to_string(),
+        "  Ctrl+V: Paste item".to_string(),
+        "  Ctrl+Shift+C: Clear clipboard".to_string(),
+        "".to_string(),
+        "Utility:".to_string(),
+        "  F12: Refresh tree from storage".to_string(),
+        "  F1: Show this help".to_string(),
+    ]
 }
