@@ -83,79 +83,48 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(tabs, area);
 }
-/// Main content layout controller
+/// Main content layout controller - always show 3-pane layout
 fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
-    if app.show_logs {
-        // When logs are shown: Collections (left) | Form (top-right) | Logs (bottom-right)
-        let horizontal_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(25), // Collections (left)
-                Constraint::Percentage(75), // Form+Logs (right)
-            ])
-            .split(area);
+    // Always use 3-pane layout: Collections (left) | Form (top-right) | Logs (bottom-right)
+    let horizontal_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(25), // Collections (left)
+            Constraint::Percentage(75), // Form+Logs (right)
+        ])
+        .split(area);
 
-        // Collections tree on the left
-        render_collections_tree(f, horizontal_chunks[0], app);
+    // Collections tree on the left
+    render_collections_tree(f, horizontal_chunks[0], app);
 
-        // Split right side: Form (top) | Logs (bottom)
-        let vertical_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Percentage(60), // Form (top)
-                Constraint::Percentage(40), // Logs (bottom)
-            ])
-            .split(horizontal_chunks[1]);
+    // Split right side: Form (top) | Logs (bottom)
+    let vertical_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(60), // Form (top)
+            Constraint::Percentage(40), // Logs (bottom)
+        ])
+        .split(horizontal_chunks[1]);
 
-        // Form in top-right
-        match app.current_mode {
-            AppMode::Automation => {
-                render_automation_form(
-                    f,
-                    vertical_chunks[0],
-                    &app.automation_state,
-                    &app.auth_service,
-                    app,
-                );
-            }
-            AppMode::Http => {
-                render_http_placeholder(f, vertical_chunks[0]);
-            }
+    // Form in top-right
+    match app.current_mode {
+        AppMode::Automation => {
+            render_automation_form(
+                f,
+                vertical_chunks[0],
+                &app.automation_state,
+                &app.auth_service,
+                app,
+            );
         }
-
-        // Logs in bottom-right
-        render_logging_panel(f, vertical_chunks[1], app);
-    } else {
-        // When logs are hidden: Collections (left) | Form (right)
-        let horizontal_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Percentage(25), // Collections (left)
-                Constraint::Percentage(75), // Form (right)
-            ])
-            .split(area);
-
-        // Collections tree on the left
-        render_collections_tree(f, horizontal_chunks[0], app);
-
-        // Form on the right
-        match app.current_mode {
-            AppMode::Automation => {
-                render_automation_form(
-                    f,
-                    horizontal_chunks[1],
-                    &app.automation_state,
-                    &app.auth_service,
-                    &app,
-                );
-            }
-            AppMode::Http => {
-                render_http_placeholder(f, horizontal_chunks[1]);
-            }
+        AppMode::Http => {
+            render_http_placeholder(f, vertical_chunks[0]);
         }
     }
-}
 
+    // Logs in bottom-right (always visible now)
+    render_logging_panel(f, vertical_chunks[1], app);
+}
 /// Placeholder for HTTP mode
 fn render_http_placeholder(f: &mut Frame, area: Rect) {
     let placeholder_text = vec![

@@ -72,7 +72,13 @@ pub struct App {
     pub log_entries: Vec<LogEntry>,
 
     /// Whether the logging panel is visible
-    pub show_logs: bool,
+    // pub show_logs: bool,
+
+    /// Current scroll position in logs (0 = bottom/newest)
+    pub log_scroll_position: usize,
+
+    /// Whether we're in log search mode
+    pub log_search_mode: bool,
 
     /// Search query for filtering logs
     pub log_search_query: String,
@@ -168,8 +174,10 @@ impl App {
             automation_state: AutomationState::new(),
             auth_service: AuthService::new(),
             log_entries: Vec::new(),
-            show_logs,
+            // show_logs,
             log_search_query: String::new(),
+            log_scroll_position: 0,
+            log_search_mode: false,
             show_login_popup: false,
             login_username: String::new(),
             login_password: String::new(),
@@ -290,14 +298,14 @@ impl App {
     }
 
     /// Add a log entry
-    pub fn log(&mut self, level: LogLevel, message: impl Into<String>) {
-        self.log_entries.push(LogEntry::new(level, message));
-
-        // Keep log entries under a reasonable limit
-        if self.log_entries.len() > 1000 {
-            self.log_entries.drain(0..100);
-        }
-    }
+    // pub fn log(&mut self, level: LogLevel, message: impl Into<String>) {
+    //     self.log_entries.push(LogEntry::new(level, message));
+    //
+    //     // Keep log entries under a reasonable limit
+    //     if self.log_entries.len() > 1000 {
+    //         self.log_entries.drain(0..100);
+    //     }
+    // }
 
     /// Get filtered log entries based on search query
     pub fn get_filtered_logs(&self) -> Vec<&LogEntry> {
@@ -307,21 +315,84 @@ impl App {
             .collect()
     }
 
-    /// Toggle the logging panel visibility
-    pub fn toggle_logs(&mut self) {
-        self.show_logs = !self.show_logs;
-        let status = if self.show_logs { "opened" } else { "closed" };
+    /// Scroll up in logs (towards older entries)
+    pub fn scroll_logs_up(&mut self) {
+        let filtered_logs = self.get_filtered_logs();
+        if filtered_logs.len() > 1 {
+            self.log_scroll_position = (self.log_scroll_position + 1).min(filtered_logs.len() - 1);
+        }
+    }
 
-        // Add some debug info to help troubleshoot
-        self.log_entries.push(LogEntry::new(
-            LogLevel::Info,
-            format!("Logging panel {} (show_logs={})", status, self.show_logs),
-        ));
+    /// Scroll down in logs (towards newer entries)
+    pub fn scroll_logs_down(&mut self) {
+        if self.log_scroll_position > 0 {
+            self.log_scroll_position -= 1;
+        }
+    }
+
+    /// Jump to top of logs (oldest)
+    pub fn scroll_logs_to_top(&mut self) {
+        let filtered_logs = self.get_filtered_logs();
+        if !filtered_logs.is_empty() {
+            self.log_scroll_position = filtered_logs.len() - 1;
+        }
+    }
+
+    /// Jump to bottom of logs (newest)
+    pub fn scroll_logs_to_bottom(&mut self) {
+        self.log_scroll_position = 0;
+    }
+
+    /// Toggle log search mode
+    pub fn toggle_log_search_mode(&mut self) {
+        self.log_search_mode = !self.log_search_mode;
+        if !self.log_search_mode {
+            self.log_search_query.clear();
+        }
+    }
+
+    /// Get logs visible in current view (accounting for scroll and search)
+    pub fn get_visible_logs_for_display(
+        &self,
+        display_height: usize,
+    ) -> (Vec<&LogEntry>, bool, bool) {
+        let filtered_logs = self.get_filtered_logs();
+
+        if filtered_logs.is_empty() {
+            return (Vec::new(), false, false);
+        }
+
+        let total_logs = filtered_logs.len();
+        let scroll_pos = self.log_scroll_position;
+
+        // Calculate which logs to show
+        let end_index = total_logs.saturating_sub(scroll_pos);
+        let start_index = end_index.saturating_sub(display_height);
+
+        let visible_logs = filtered_logs[start_index..end_index].to_vec();
+
+        // Calculate scroll indicators
+        let can_scroll_up = scroll_pos < total_logs.saturating_sub(1);
+        let can_scroll_down = scroll_pos > 0;
+
+        (visible_logs, can_scroll_up, can_scroll_down)
+    }
+
+    // Update the log method to auto-scroll to bottom when new logs arrive
+    pub fn log(&mut self, level: LogLevel, message: impl Into<String>) {
+        self.log_entries.push(LogEntry::new(level, message));
 
         // Keep log entries under a reasonable limit
         if self.log_entries.len() > 1000 {
             self.log_entries.drain(0..100);
         }
+
+        // Auto-scroll to bottom (newest) when new logs arrive, unless user has scrolled up
+        if self.log_scroll_position == 0 {
+            // User is at bottom, keep them there
+            self.log_scroll_position = 0;
+        }
+        // If user has scrolled up, don't auto-scroll (let them stay where they are)
     }
 
     /// Switch to a different mode

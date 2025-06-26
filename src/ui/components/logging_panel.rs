@@ -1,33 +1,53 @@
-use crate::app::App;
+use crate::app::{App, FocusedPane};
 use crate::models::LogEntry;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph},
+    widgets::{
+        Block, Borders, List, ListItem, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    },
 };
 
-/// Render the logging panel with search functionality
+/// Render the logging panel with search functionality and scrolling
 pub fn render_logging_panel(f: &mut Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // Search bar
-            Constraint::Min(5),    // Log entries
-        ])
-        .split(area);
+    let is_focused = app.focused_pane == FocusedPane::Logs;
 
-    render_search_bar(f, chunks[0], app);
-    render_log_entries(f, chunks[1], app);
+    let chunks = if app.log_search_mode {
+        // Show search bar when in search mode
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3), // Search bar
+                Constraint::Min(5),    // Log entries
+            ])
+            .split(area)
+    } else {
+        // Hide search bar when not searching
+        Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(5), // Log entries (full height)
+            ])
+            .split(area)
+    };
+
+    // Render search bar if in search mode
+    if app.log_search_mode {
+        render_search_bar(f, chunks[0], app, is_focused);
+        render_log_entries(f, chunks[1], app, is_focused);
+    } else {
+        render_log_entries(f, chunks[0], app, is_focused);
+    }
 }
 
 /// Render the search bar at the top of the logging panel
-fn render_search_bar(f: &mut Frame, area: Rect, app: &App) {
+fn render_search_bar(f: &mut Frame, area: Rect, app: &App, logs_focused: bool) {
     let search_text = if app.log_search_query.is_empty() {
-        "Type to search logs...".to_string()
+        "Type to search logs... (Esc to exit search)"
     } else {
-        app.log_search_query.clone()
+        &app.log_search_query
     };
 
     let style = if app.log_search_query.is_empty() {
@@ -36,44 +56,67 @@ fn render_search_bar(f: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::White)
     };
 
+    let border_style = if logs_focused {
+        Style::default().fg(Color::Blue)
+    } else {
+        Style::default().fg(Color::White)
+    };
+
     let search_bar = Paragraph::new(search_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("🔍 Search Logs (Delete to clear)")
-                .title_style(Style::default().fg(Color::Cyan)),
+                .title("🔍 Search Logs")
+                .title_style(Style::default().fg(Color::Cyan))
+                .border_style(border_style),
         )
         .style(style);
 
     f.render_widget(search_bar, area);
 }
 
-/// Render the list of log entries
-fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
-    let filtered_logs = app.get_filtered_logs();
-
-    // Take the last N logs that fit in the display area
+/// Render the scrollable list of log entries
+fn render_log_entries(f: &mut Frame, area: Rect, app: &App, is_focused: bool) {
     let display_height = area.height.saturating_sub(2) as usize; // Account for borders
-    let start_index = if filtered_logs.len() > display_height {
-        filtered_logs.len() - display_height
-    } else {
-        0
-    };
+    let (visible_logs, can_scroll_up, can_scroll_down) =
+        app.get_visible_logs_for_display(display_height);
 
-    let items: Vec<ListItem> = filtered_logs
+    let items: Vec<ListItem> = visible_logs
         .iter()
-        .skip(start_index)
         .map(|log_entry| create_log_list_item(log_entry))
         .collect();
 
+    // Build title with scroll indicators and focus state
+    let scroll_indicator = match (can_scroll_up, can_scroll_down) {
+        (true, true) => " ↕️",
+        (true, false) => " ↑",
+        (false, true) => " ↓",
+        (false, false) => "",
+    };
+
+    let focus_indicator = if is_focused { " [FOCUSED]" } else { "" };
+
     let log_count_info = if app.log_search_query.is_empty() {
-        format!("Logs ({} total)", app.log_entries.len())
+        format!(
+            "Logs ({} total){}{}",
+            app.log_entries.len(),
+            scroll_indicator,
+            focus_indicator
+        )
     } else {
         format!(
-            "Logs ({} of {} shown)",
-            filtered_logs.len(),
-            app.log_entries.len()
+            "Logs ({} of {} shown){}{}",
+            app.get_filtered_logs().len(),
+            app.log_entries.len(),
+            scroll_indicator,
+            focus_indicator
         )
+    };
+
+    let border_style = if is_focused {
+        Style::default().fg(Color::Blue)
+    } else {
+        Style::default().fg(Color::White)
     };
 
     let list = List::new(items)
@@ -81,11 +124,39 @@ fn render_log_entries(f: &mut Frame, area: Rect, app: &App) {
             Block::default()
                 .borders(Borders::ALL)
                 .title(log_count_info)
-                .title_style(Style::default().fg(Color::Green)),
+                .title_style(Style::default().fg(Color::Green))
+                .border_style(border_style),
         )
         .style(Style::default());
 
     f.render_widget(list, area);
+
+    // Render scrollbar if there are more logs than can fit
+    if can_scroll_up || can_scroll_down {
+        let filtered_logs = app.get_filtered_logs();
+        let total_logs = filtered_logs.len();
+
+        if total_logs > display_height {
+            let scrollbar_area = Rect {
+                x: area.x + area.width - 1,
+                y: area.y + 1,
+                width: 1,
+                height: area.height - 2,
+            };
+
+            let mut scrollbar_state = ScrollbarState::default()
+                .content_length(total_logs)
+                .viewport_content_length(display_height)
+                .position(app.log_scroll_position);
+
+            let scrollbar = Scrollbar::default()
+                .orientation(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(Some("↑"))
+                .end_symbol(Some("↓"));
+
+            f.render_stateful_widget(scrollbar, scrollbar_area, &mut scrollbar_state);
+        }
+    }
 }
 
 /// Create a styled list item for a log entry

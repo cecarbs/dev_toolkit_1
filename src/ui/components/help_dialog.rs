@@ -180,11 +180,11 @@ fn get_help_sections() -> Vec<HelpSection> {
             title: "Global Shortcuts".to_string(),
             items: vec![
                 HelpItem::new("Ctrl+Q", "Quit application"),
-                HelpItem::new("Ctrl+H", "Focus left pane (Collections)"),
-                HelpItem::new("Ctrl+L", "Focus right pane (Form)"),
+                HelpItem::new("H/L", "Focus left/right pane"),
+                HelpItem::new("J/K", "Focus next/previous pane (circular)"),
                 HelpItem::new("F1", "Switch to Automation mode"),
                 HelpItem::new("F4", "Switch to HTTP mode"),
-                HelpItem::new("F2", "Toggle logs panel"),
+                HelpItem::new("F5/F6/F7", "Focus Collections/Form/Logs directly"),
                 HelpItem::new("?", "Show this help dialog"),
             ],
         },
@@ -238,12 +238,35 @@ fn get_help_sections() -> Vec<HelpSection> {
             ],
         },
         HelpSection {
-            title: "Log Search".to_string(),
+            title: "Log Navigation".to_string(),
             items: vec![
-                HelpItem::new("Type", "Search through log messages"),
-                HelpItem::new("Delete", "Clear search query"),
-                HelpItem::new("Esc", "Close logs panel"),
-                HelpItem::new("F2", "Toggle logs panel"),
+                HelpItem::new("j/k or ↑/↓", "Scroll up/down through logs")
+                    .with_example("k = older logs (up), j = newer logs (down)"),
+                HelpItem::new("g", "Jump to top (oldest logs)")
+                    .with_example("Like Vim's gg command"),
+                HelpItem::new("G", "Jump to bottom (newest logs)")
+                    .with_example("Like Vim's G command"),
+                HelpItem::new("Ctrl+U", "Page up (scroll up 10 lines)")
+                    .with_example("Faster scrolling through many logs"),
+                HelpItem::new("Ctrl+D", "Page down (scroll down 10 lines)")
+                    .with_example("Faster scrolling through many logs"),
+                HelpItem::new("/", "Enter search mode")
+                    .with_example("Type to filter logs, Esc to exit"),
+                HelpItem::new("Ctrl+C", "Clear current search filter"),
+            ],
+        },
+        HelpSection {
+            title: "Log Search Mode".to_string(),
+            items: vec![
+                HelpItem::new("Type", "Search through log messages")
+                    .with_example("Searches both message text and log levels"),
+                HelpItem::new("Esc", "Exit search mode")
+                    .with_example("Returns to normal log navigation"),
+                HelpItem::new("Backspace", "Delete last character from search"),
+                HelpItem::new("Delete", "Clear entire search query"),
+                HelpItem::new("j/k or ↑/↓", "Scroll through filtered results")
+                    .with_example("Search and navigation work together"),
+                HelpItem::new("g/G", "Jump to top/bottom of filtered results"),
             ],
         },
         HelpSection {
@@ -259,11 +282,12 @@ fn get_help_sections() -> Vec<HelpSection> {
                     .with_example("[NORMAL] or [EDIT] appears in Form Fields title"),
                 HelpItem::new("Context Help", "Status line shows relevant keys")
                     .with_example("Different commands shown based on current mode"),
+                HelpItem::new("Search Modes", "Some panes have special search modes")
+                    .with_example("Logs: / to search, Esc to exit"),
             ],
         },
     ]
 }
-
 /// Filter sections based on selected tab and search query
 fn filter_help_sections(sections: &[HelpSection], app: &App) -> Vec<HelpSection> {
     let mut filtered = sections.to_vec();
@@ -279,18 +303,14 @@ fn filter_help_sections(sections: &[HelpSection], app: &App) -> Vec<HelpSection>
         filtered = filtered
             .into_iter()
             .map(|mut section| {
-                section.items = section
-                    .items
-                    .into_iter()
-                    .filter(|item| {
-                        item.keys.to_lowercase().contains(&query)
-                            || item.description.to_lowercase().contains(&query)
-                            || item
-                                .example
-                                .as_ref()
-                                .map_or(false, |ex| ex.to_lowercase().contains(&query))
-                    })
-                    .collect();
+                section.items.retain(|item| {
+                    item.keys.to_lowercase().contains(&query)
+                        || item.description.to_lowercase().contains(&query)
+                        || item
+                            .example
+                            .as_ref()
+                            .is_some_and(|ex| ex.to_lowercase().contains(&query))
+                });
                 section
             })
             .filter(|section| !section.items.is_empty())

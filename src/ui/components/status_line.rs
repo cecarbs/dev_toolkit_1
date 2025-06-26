@@ -72,7 +72,7 @@ fn get_contextual_status_text(app: &App) -> Line<'static> {
             key("Ctrl+N"),
             desc(":save template"),
             separator(),
-            key("Ctrl+H/L"),
+            key("H/L"),
             desc(":switch pane"),
             separator(),
             key("F3"),
@@ -103,29 +103,52 @@ fn get_contextual_status_text(app: &App) -> Line<'static> {
             desc(":help"),
         ]),
 
-        // Logs focused
-        (FocusedPane::Logs, _) => Line::from(vec![
-            key("Type"),
-            desc(":search logs"),
-            separator(),
-            key("Delete"),
-            desc(":clear search"),
-            separator(),
-            key("Esc"),
-            desc(":close logs"),
-            separator(),
-            key("Ctrl+H/L"),
-            desc(":switch pane"),
-            separator(),
-            key("F2"),
-            desc(":toggle logs"),
-            separator(),
-            key("?"),
-            desc(":help"),
-        ]),
+        // Logs focused - NEW AND IMPROVED
+        (FocusedPane::Logs, _) => {
+            if app.log_search_mode {
+                Line::from(vec![
+                    key("Type"),
+                    desc(":search"),
+                    separator(),
+                    key("Esc"),
+                    desc(":exit search"),
+                    separator(),
+                    key("j/k"),
+                    desc(":scroll"),
+                    separator(),
+                    key("g/G"),
+                    desc(":top/bottom"),
+                    separator(),
+                    key("H/L"),
+                    desc(":switch pane"),
+                    separator(),
+                    key("?"),
+                    desc(":help"),
+                ])
+            } else {
+                Line::from(vec![
+                    key("/"),
+                    desc(":search"),
+                    separator(),
+                    key("j/k"),
+                    desc(":scroll"),
+                    separator(),
+                    key("Ctrl+U/D"),
+                    desc(":page up/down"),
+                    separator(),
+                    key("g/G"),
+                    desc(":top/bottom"),
+                    separator(),
+                    key("H/L"),
+                    desc(":switch pane"),
+                    separator(),
+                    key("?"),
+                    desc(":help"),
+                ])
+            }
+        }
     }
 }
-
 /// Get a compact status text for very narrow screens
 pub fn get_compact_status_text(app: &App) -> String {
     match (&app.focused_pane, &app.input_mode) {
@@ -134,7 +157,13 @@ pub fn get_compact_status_text(app: &App) -> String {
             "i:edit j/k:nav Tab:next Ctrl+N:save ?:help".to_string()
         }
         (FocusedPane::Form, InputMode::Edit) => "Esc:normal ←/→:cursor Tab:next ?:help".to_string(),
-        (FocusedPane::Logs, _) => "Type:search Delete:clear Esc:close ?:help".to_string(),
+        (FocusedPane::Logs, _) => {
+            if app.log_search_mode {
+                "Type:search Esc:exit j/k:scroll ?:help".to_string()
+            } else {
+                "/:search j/k:scroll g/G:top/bottom ?:help".to_string()
+            }
+        }
     }
 }
 

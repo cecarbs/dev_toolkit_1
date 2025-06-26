@@ -32,11 +32,11 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
             return Ok(());
         }
         // Toggle logging panel
-        KeyCode::F(2) => {
-            app.log(LogLevel::Debug, "F2 detected - toggling logs");
-            app.toggle_logs();
-            return Ok(());
-        }
+        // KeyCode::F(2) => {
+        //     app.log(LogLevel::Debug, "F2 detected - toggling logs");
+        //     app.toggle_logs();
+        //     return Ok(());
+        // }
         // Switch modes
         KeyCode::F(1) => {
             app.switch_mode(AppMode::Automation);
@@ -58,28 +58,78 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
             return Ok(());
         }
         KeyCode::F(7) => {
-            if app.show_logs {
-                app.focus_pane(FocusedPane::Logs);
-                app.log(LogLevel::Debug, "Focused logs");
+            app.focus_pane(FocusedPane::Logs);
+            app.log(LogLevel::Debug, "Focused logs");
+            return Ok(());
+        }
+
+        // Vim-style pane navigation
+        KeyCode::Char('H') => {
+            match app.focused_pane {
+                FocusedPane::Form => {
+                    app.focus_pane(FocusedPane::Collections);
+                    app.log(
+                        LogLevel::Debug,
+                        "Focused collections tree using VIM motions",
+                    );
+                }
+                FocusedPane::Logs => {
+                    app.focus_pane(FocusedPane::Form);
+                    app.log(LogLevel::Debug, "Focused form using VIM motions");
+                }
+                _ => {}
             }
             return Ok(());
         }
-        KeyCode::Char('H') => {
-            if app.focused_pane == FocusedPane::Form {
-                app.focus_pane(FocusedPane::Collections);
-                app.log(
-                    LogLevel::Debug,
-                    "Focused collections tree using VIM motions",
-                );
-                return Ok(());
-            }
-        }
         KeyCode::Char('L') => {
-            if app.focused_pane == FocusedPane::Collections {
-                app.focus_pane(FocusedPane::Form);
-                app.log(LogLevel::Debug, "Focused form using VIM motions");
-                return Ok(());
+            match app.focused_pane {
+                FocusedPane::Collections => {
+                    app.focus_pane(FocusedPane::Form);
+                    app.log(LogLevel::Debug, "Focused form using VIM motions");
+                }
+                FocusedPane::Form => {
+                    app.focus_pane(FocusedPane::Logs);
+                    app.log(LogLevel::Debug, "Focused logs using VIM motions");
+                }
+                _ => {}
             }
+            return Ok(());
+        }
+        KeyCode::Char('J') => {
+            // Move down to next pane
+            match app.focused_pane {
+                FocusedPane::Collections => {
+                    app.focus_pane(FocusedPane::Form);
+                    app.log(LogLevel::Debug, "Focused form using VIM motions");
+                }
+                FocusedPane::Form => {
+                    app.focus_pane(FocusedPane::Logs);
+                    app.log(LogLevel::Debug, "Focused logs using VIM motions");
+                }
+                FocusedPane::Logs => {
+                    app.focus_pane(FocusedPane::Collections);
+                    app.log(LogLevel::Debug, "Focused collections using VIM motions");
+                }
+            }
+            return Ok(());
+        }
+        KeyCode::Char('K') => {
+            // Move up to previous pane
+            match app.focused_pane {
+                FocusedPane::Collections => {
+                    app.focus_pane(FocusedPane::Logs);
+                    app.log(LogLevel::Debug, "Focused logs using VIM motions");
+                }
+                FocusedPane::Form => {
+                    app.focus_pane(FocusedPane::Collections);
+                    app.log(LogLevel::Debug, "Focused collections using VIM motions");
+                }
+                FocusedPane::Logs => {
+                    app.focus_pane(FocusedPane::Form);
+                    app.log(LogLevel::Debug, "Focused form using VIM motions");
+                }
+            }
+            return Ok(());
         }
         KeyCode::Char('?') => {
             app.show_help_dialog();
@@ -337,10 +387,10 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
 }
 
 async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
-    // Handle log search when logs pane is focused
-    if app.focused_pane == FocusedPane::Logs && app.show_logs && key_event.code != KeyCode::Esc {
-        return handle_log_search_keys(app, key_event);
-    }
+    // // Handle log search when logs pane is focused
+    // if app.focused_pane == FocusedPane::Logs && app.show_logs && key_event.code != KeyCode::Esc {
+    //     return handle_log_search_keys(app, key_event);
+    // }
 
     // Handle keys based on input mode
     match app.input_mode {
@@ -695,26 +745,120 @@ async fn handle_edit_mode_keys(app: &mut App, key_event: KeyEvent) -> Result<()>
     Ok(())
 }
 /// Handle keyboard events for log search functionality
-fn handle_log_search_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
-    match key_event.code {
-        KeyCode::Char(c) => {
-            app.log_search_query.push(c);
-        }
-        KeyCode::Backspace => {
-            app.log_search_query.pop();
-        }
-        KeyCode::Delete => {
-            app.log_search_query.clear();
-        }
-        _ => {}
-    }
-
-    Ok(())
-}
+// fn handle_log_search_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+//     match key_event.code {
+//         KeyCode::Char(c) => {
+//             app.log_search_query.push(c);
+//         }
+//         KeyCode::Backspace => {
+//             app.log_search_query.pop();
+//         }
+//         KeyCode::Delete => {
+//             app.log_search_query.clear();
+//         }
+//         _ => {}
+//     }
+//
+//     Ok(())
+// }
 
 /// Handle keyboard events for the logs pane
 async fn handle_log_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
-    handle_log_search_keys(app, key_event)?;
+    // If in search mode, handle search input
+    if app.log_search_mode {
+        match key_event.code {
+            // Exit search mode
+            KeyCode::Esc => {
+                app.toggle_log_search_mode();
+                app.log(LogLevel::Debug, "Exited log search mode");
+            }
+
+            // Search input
+            KeyCode::Char(c)
+                if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+            {
+                app.log_search_query.push(c);
+            }
+            KeyCode::Backspace => {
+                app.log_search_query.pop();
+            }
+            KeyCode::Delete => {
+                app.log_search_query.clear();
+            }
+
+            // Allow scrolling even in search mode
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.scroll_logs_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.scroll_logs_down();
+            }
+            KeyCode::Home | KeyCode::Char('g') => {
+                app.scroll_logs_to_top();
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                app.scroll_logs_to_bottom();
+            }
+
+            _ => {}
+        }
+    } else {
+        // Normal log navigation mode
+        match key_event.code {
+            // Enter search mode
+            KeyCode::Char('/') => {
+                app.toggle_log_search_mode();
+                app.log(LogLevel::Debug, "Entered log search mode");
+            }
+
+            // Scroll navigation (vim-style)
+            KeyCode::Up | KeyCode::Char('k') => {
+                app.scroll_logs_up();
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                app.scroll_logs_down();
+            }
+
+            // Page navigation
+            KeyCode::PageUp | KeyCode::Char('u')
+                if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                // Page up - scroll multiple lines
+                for _ in 0..10 {
+                    app.scroll_logs_up();
+                }
+            }
+            KeyCode::PageDown | KeyCode::Char('d')
+                if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                // Page down - scroll multiple lines
+                for _ in 0..10 {
+                    app.scroll_logs_down();
+                }
+            }
+
+            // Jump to top/bottom (vim-style)
+            KeyCode::Home | KeyCode::Char('g') => {
+                app.scroll_logs_to_top();
+                app.log(LogLevel::Debug, "Jumped to top of logs");
+            }
+            KeyCode::End | KeyCode::Char('G') => {
+                app.scroll_logs_to_bottom();
+                app.log(LogLevel::Debug, "Jumped to bottom of logs");
+            }
+
+            // Clear search (if any)
+            KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+                if !app.log_search_query.is_empty() {
+                    app.log_search_query.clear();
+                    app.log(LogLevel::Debug, "Cleared log search");
+                }
+            }
+
+            _ => {}
+        }
+    }
+
     Ok(())
 }
 
