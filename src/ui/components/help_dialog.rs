@@ -173,7 +173,7 @@ fn render_help_instructions(f: &mut Frame, area: Rect) {
     f.render_widget(help_widget, area);
 }
 
-/// Get all help sections with comprehensive keybindings
+/// Get all help sections with comprehensive keybindings including HTTP client
 fn get_help_sections() -> Vec<HelpSection> {
     vec![
         HelpSection {
@@ -183,7 +183,7 @@ fn get_help_sections() -> Vec<HelpSection> {
                 HelpItem::new("H/L", "Focus left/right pane"),
                 HelpItem::new("J/K", "Focus next/previous pane (circular)"),
                 HelpItem::new("F1", "Switch to Automation mode"),
-                HelpItem::new("F4", "Switch to HTTP mode"),
+                HelpItem::new("F4", "Switch to HTTP Client mode"),
                 HelpItem::new("F5/F6/F7", "Focus Collections/Form/Logs directly"),
                 HelpItem::new("?", "Show this help dialog"),
             ],
@@ -192,11 +192,11 @@ fn get_help_sections() -> Vec<HelpSection> {
             title: "Collections Tree".to_string(),
             items: vec![
                 HelpItem::new("↑/↓", "Navigate up/down in tree"),
-                HelpItem::new("Enter", "Load template or expand/collapse folder"),
+                HelpItem::new("Enter", "Load template/request or expand/collapse folder"),
                 HelpItem::new("Space", "Toggle folder expansion only"),
                 HelpItem::new("Tab", "Focus next pane"),
                 HelpItem::new("s", "Select current item"),
-                HelpItem::new("Ctrl+N", "Create new template from current form")
+                HelpItem::new("Ctrl+N", "Create new template/request from current form")
                     .with_example("Fill form, then Ctrl+N to save as template"),
                 HelpItem::new("Ctrl+F", "Create new folder")
                     .with_example("Creates subfolder in currently selected location"),
@@ -209,7 +209,7 @@ fn get_help_sections() -> Vec<HelpSection> {
             ],
         },
         HelpSection {
-            title: "Form Fields - Normal Mode".to_string(),
+            title: "Automation Form - Normal Mode".to_string(),
             items: vec![
                 HelpItem::new("i or Enter", "Enter edit mode for current field"),
                 HelpItem::new("j/k", "Navigate to next/previous field (Vim style)"),
@@ -222,7 +222,7 @@ fn get_help_sections() -> Vec<HelpSection> {
             ],
         },
         HelpSection {
-            title: "Form Fields - Edit Mode".to_string(),
+            title: "Automation Form - Edit Mode".to_string(),
             items: vec![
                 HelpItem::new("Esc", "Exit edit mode, return to normal mode"),
                 HelpItem::new("←/→", "Move cursor left/right within field"),
@@ -235,6 +235,54 @@ fn get_help_sections() -> Vec<HelpSection> {
                 HelpItem::new("Ctrl+N", "Save template (works in edit mode too)"),
                 HelpItem::new("Any letter", "Type normally, including Shift for capitals")
                     .with_example("Shift+A produces 'A', just like normal typing"),
+            ],
+        },
+        HelpSection {
+            title: "HTTP Request Editor - Normal Mode".to_string(),
+            items: vec![
+                HelpItem::new("i or Enter", "Enter edit mode for URL input"),
+                HelpItem::new(
+                    "Tab/Shift+Tab",
+                    "Navigate request tabs (Headers/Body/Query/Auth/Settings)",
+                )
+                .with_example("Move between different sections of the request"),
+                HelpItem::new("m", "Cycle HTTP method (GET → POST → PUT → DELETE → ...)")
+                    .with_example("Quick way to change request method"),
+                HelpItem::new("1/2/3/4", "Quick method shortcuts")
+                    .with_example("1=GET, 2=POST, 3=PUT, 4=DELETE"),
+                HelpItem::new("Space or F3", "Send HTTP request")
+                    .with_example("Execute the current request and show response"),
+                HelpItem::new("Ctrl+N", "Create new HTTP request"),
+                HelpItem::new("Delete", "Clear current tab content")
+                    .with_example("Clear headers, body, or query params depending on active tab"),
+            ],
+        },
+        HelpSection {
+            title: "HTTP Request Editor - Edit Mode".to_string(),
+            items: vec![
+                HelpItem::new("Esc", "Exit edit mode, return to normal mode"),
+                HelpItem::new("Type", "Edit URL or current field content"),
+                HelpItem::new("Backspace", "Delete characters"),
+                HelpItem::new("Tab/Shift+Tab", "Switch tabs while staying in edit mode"),
+                HelpItem::new("F3", "Send request from edit mode"),
+                HelpItem::new("Ctrl+N", "Save request as new item"),
+            ],
+        },
+        HelpSection {
+            title: "HTTP Response Viewer".to_string(),
+            items: vec![
+                HelpItem::new(
+                    "Tab/Shift+Tab",
+                    "Navigate response tabs (Body/Headers/Info)",
+                )
+                .with_example("Switch between response body, headers, and timing info"),
+                HelpItem::new("Ctrl+C", "Copy response body to clipboard")
+                    .with_example("Copy JSON or text response for use elsewhere"),
+                HelpItem::new("Delete", "Clear current response")
+                    .with_example("Remove response to prepare for new request"),
+                HelpItem::new("j/k or ↑/↓", "Scroll through response content")
+                    .with_example("Navigate long responses or header lists"),
+                HelpItem::new("g/G", "Jump to top/bottom of response"),
             ],
         },
         HelpSection {
@@ -270,20 +318,22 @@ fn get_help_sections() -> Vec<HelpSection> {
             ],
         },
         HelpSection {
-            title: "Modal Editing Concepts".to_string(),
+            title: "Mode Concepts & Tips".to_string(),
             items: vec![
                 HelpItem::new("Normal Mode", "Navigate and execute commands")
                     .with_example("Like Vim's normal mode - keys are commands"),
-                HelpItem::new("Edit Mode", "Type text into form fields")
+                HelpItem::new("Edit Mode", "Type text into form fields or URL")
                     .with_example("Like Vim's insert mode - keys insert text"),
                 HelpItem::new("Pane Focus", "Only one pane receives input at a time")
                     .with_example("Blue borders show which pane is focused"),
                 HelpItem::new("Visual Feedback", "Mode shown in pane titles")
-                    .with_example("[NORMAL] or [EDIT] appears in Form Fields title"),
+                    .with_example("[NORMAL] or [EDIT] appears in titles"),
                 HelpItem::new("Context Help", "Status line shows relevant keys")
                     .with_example("Different commands shown based on current mode"),
-                HelpItem::new("Search Modes", "Some panes have special search modes")
-                    .with_example("Logs: / to search, Esc to exit"),
+                HelpItem::new("HTTP vs Automation", "Different modes for different tasks")
+                    .with_example("F1/F4 to switch between browser automation and API testing"),
+                HelpItem::new("Tab Indicators", "• dots show tabs with content")
+                    .with_example("Headers•, Body•, Query• indicate populated tabs"),
             ],
         },
     ]

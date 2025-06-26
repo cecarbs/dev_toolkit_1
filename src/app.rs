@@ -47,6 +47,10 @@ pub enum AppMessage {
     AutomationProgress(String),
     /// Request to quit the application
     Quit,
+    /// Response from API call
+    HttpResponseReceived(HttpResponse),
+    /// HTTP request failed - clear sending state
+    HttpRequestFailed(String),
 }
 
 /// Global app state that coordinates everything
@@ -298,6 +302,15 @@ impl App {
                 }
                 AppMessage::Quit => {
                     self.should_quit = true;
+                }
+                AppMessage::HttpResponseReceived(response) => {
+                    self.http_state.last_response = Some(response);
+                    self.http_state.is_sending = false;
+                }
+                AppMessage::HttpRequestFailed(error) => {
+                    // NEW: Add this case
+                    self.http_state.is_sending = false;
+                    self.log(LogLevel::Error, error);
                 }
             }
         }
@@ -1790,16 +1803,19 @@ impl App {
                         format!("✅ HTTP {} {}", response.status_code, response.status_text),
                     ));
 
-                    // TODO: Send response back to UI
-                    // We'll need a new message type for HTTP responses
                     let _ = sender.send(AppMessage::Log(
                         LogLevel::Info,
                         format!("Response received in {} ms", response.duration_ms),
                     ));
+
+                    // FIXED: Send the actual response to update the UI
+                    let _ = sender.send(AppMessage::HttpResponseReceived(response));
                 }
                 Err(error) => {
-                    let error_msg = format!("❌ HTTP request failed: {}", error);
-                    let _ = sender.send(AppMessage::Log(LogLevel::Error, error_msg));
+                    let error_msg = format!("HTTP request failed: {}", error);
+
+                    // FIXED: Use new message type to clear sending state
+                    let _ = sender.send(AppMessage::HttpRequestFailed(error_msg));
                 }
             }
         });
