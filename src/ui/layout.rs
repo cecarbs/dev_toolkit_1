@@ -1,4 +1,6 @@
 use crate::app::{App, AppMode, FocusedPane};
+use crate::ui::components::http_request_editor::render_http_request_editor;
+use crate::ui::components::http_response_viewer::render_http_response_viewer;
 use crate::ui::components::rename_dialog::render_rename_dialog;
 use crate::ui::components::{
     get_mode_indicator, render_automation_form, render_collections_tree,
@@ -83,32 +85,53 @@ fn render_header(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(tabs, area);
 }
-/// Main content layout controller - always show 3-pane layout
+
+/// Get mode indicator for HTTP mode
+fn get_http_mode_indicator(app: &App) -> String {
+    let method = &app.http_state.current_request.method;
+    let is_valid = app.http_state.is_valid();
+    let is_sending = app.http_state.is_sending;
+
+    if is_sending {
+        " [SENDING]".to_string()
+    } else if app.focused_pane == FocusedPane::Form {
+        match app.input_mode {
+            crate::app::InputMode::Normal => format!(" [{}]", method.as_str()),
+            crate::app::InputMode::Edit => format!(" [EDIT {}]", method.as_str()),
+        }
+    } else if !is_valid {
+        " [INVALID]".to_string()
+    } else {
+        format!(" [{}]", method.as_str())
+    }
+}
+
+/// Main content layout controller - always show 3-pane layout with mode-specific content
 fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
-    // Always use 3-pane layout: Collections (left) | Form (top-right) | Logs (bottom-right)
+    // Always use 3-pane layout: Collections (left) | Content (top-right) | Logs/Response (bottom-right)
     let horizontal_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
             Constraint::Percentage(25), // Collections (left)
-            Constraint::Percentage(75), // Form+Logs (right)
+            Constraint::Percentage(75), // Content+Logs/Response (right)
         ])
         .split(area);
 
-    // Collections tree on the left
+    // Collections tree on the left (same for both modes)
     render_collections_tree(f, horizontal_chunks[0], app);
 
-    // Split right side: Form (top) | Logs (bottom)
-    let vertical_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(60), // Form (top)
-            Constraint::Percentage(40), // Logs (bottom)
-        ])
-        .split(horizontal_chunks[1]);
-
-    // Form in top-right
+    // Split right side based on current mode
     match app.current_mode {
         AppMode::Automation => {
+            // Automation: Form (top) | Logs (bottom)
+            let vertical_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(60), // Form (top)
+                    Constraint::Percentage(40), // Logs (bottom)
+                ])
+                .split(horizontal_chunks[1]);
+
             render_automation_form(
                 f,
                 vertical_chunks[0],
@@ -116,15 +139,67 @@ fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
                 &app.auth_service,
                 app,
             );
+
+            render_logging_panel(f, vertical_chunks[1], app);
         }
         AppMode::Http => {
-            render_http_placeholder(f, vertical_chunks[0]);
+            // HTTP: Request Editor (top) | Response Viewer (bottom)
+            let vertical_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(60), // Request Editor (top)
+                    Constraint::Percentage(40), // Response Viewer (bottom)
+                ])
+                .split(horizontal_chunks[1]);
+
+            render_http_request_editor(f, vertical_chunks[0], &app.http_state, app);
+            render_http_response_viewer(f, vertical_chunks[1], &app.http_state, app);
         }
     }
-
-    // Logs in bottom-right (always visible now)
-    render_logging_panel(f, vertical_chunks[1], app);
 }
+// TODO: old version
+/// Main content layout controller - always show 3-pane layout
+// fn render_main_content(f: &mut Frame, area: Rect, app: &App) {
+//     // Always use 3-pane layout: Collections (left) | Form (top-right) | Logs (bottom-right)
+//     let horizontal_chunks = Layout::default()
+//         .direction(Direction::Horizontal)
+//         .constraints([
+//             Constraint::Percentage(25), // Collections (left)
+//             Constraint::Percentage(75), // Form+Logs (right)
+//         ])
+//         .split(area);
+//
+//     // Collections tree on the left
+//     render_collections_tree(f, horizontal_chunks[0], app);
+//
+//     // Split right side: Form (top) | Logs (bottom)
+//     let vertical_chunks = Layout::default()
+//         .direction(Direction::Vertical)
+//         .constraints([
+//             Constraint::Percentage(60), // Form (top)
+//             Constraint::Percentage(40), // Logs (bottom)
+//         ])
+//         .split(horizontal_chunks[1]);
+//
+//     // Form in top-right
+//     match app.current_mode {
+//         AppMode::Automation => {
+//             render_automation_form(
+//                 f,
+//                 vertical_chunks[0],
+//                 &app.automation_state,
+//                 &app.auth_service,
+//                 app,
+//             );
+//         }
+//         AppMode::Http => {
+//             render_http_placeholder(f, vertical_chunks[0]);
+//         }
+//     }
+//
+//     // Logs in bottom-right (always visible now)
+//     render_logging_panel(f, vertical_chunks[1], app);
+// }
 /// Placeholder for HTTP mode
 fn render_http_placeholder(f: &mut Frame, area: Rect) {
     let placeholder_text = vec![

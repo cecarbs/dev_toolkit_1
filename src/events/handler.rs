@@ -1,4 +1,6 @@
 use crate::app::{App, AppMode, FocusedPane, InputMode};
+use crate::models::http::HttpRequestTab;
+use crate::models::http_client::{HttpMethod, HttpRequestBody};
 use crate::models::{FocusDirection, LogLevel, NodeType};
 use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -387,19 +389,211 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
 }
 
 async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
-    // // Handle log search when logs pane is focused
-    // if app.focused_pane == FocusedPane::Logs && app.show_logs && key_event.code != KeyCode::Esc {
-    //     return handle_log_search_keys(app, key_event);
-    // }
-
-    // Handle keys based on input mode
-    match app.input_mode {
-        InputMode::Normal => handle_normal_mode_keys(app, key_event).await?,
-        InputMode::Edit => handle_edit_mode_keys(app, key_event).await?,
+    match app.current_mode {
+        AppMode::Automation => handle_automation_form_keys(app, key_event).await?,
+        AppMode::Http => handle_http_form_keys(app, key_event).await?,
     }
 
     Ok(())
 }
+
+/// Handle keyboard events for the form pane (both automation and HTTP modes)
+// async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+//     // // Handle log search when logs pane is focused
+//     // if app.focused_pane == FocusedPane::Logs && app.show_logs && key_event.code != KeyCode::Esc {
+//     //     return handle_log_search_keys(app, key_event);
+//     // }
+//
+//     // TODO: previous version
+//     // Handle keys based on input mode
+//     // match app.input_mode {
+//     //     InputMode::Normal => handle_normal_mode_keys(app, key_event).await?,
+//     //     InputMode::Edit => handle_edit_mode_keys(app, key_event).await?,
+//     // }
+//     match app.current_mode {
+//         AppMode::Automation => handle_automation_form_keys(app, key_event).await,
+//         AppMode::Http => handle_http_form_keys(app, key_event).await,
+//     }
+//
+//     Ok(())
+// }
+
+/// Handle HTTP form keys in normal mode
+async fn handle_http_normal_mode_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Enter edit mode
+        KeyCode::Enter => {
+            app.enter_edit_mode();
+        }
+
+        // Alternative: 'i' for insert mode (like Vim)
+        KeyCode::Char('i') => {
+            app.enter_edit_mode();
+        }
+
+        // Tab navigation for request editor
+        KeyCode::Tab => {
+            app.http_state.next_request_tab();
+            app.log(
+                LogLevel::Debug,
+                format!(
+                    "Switched to {} tab",
+                    app.http_state.current_request_tab.title()
+                ),
+            );
+        }
+        KeyCode::BackTab => {
+            app.http_state.prev_request_tab();
+            app.log(
+                LogLevel::Debug,
+                format!(
+                    "Switched to {} tab",
+                    app.http_state.current_request_tab.title()
+                ),
+            );
+        }
+
+        // Method selection (M key)
+        KeyCode::Char('m') => {
+            cycle_http_method(app);
+        }
+
+        // Quick method shortcuts
+        KeyCode::Char('1') => {
+            app.http_state.set_method(HttpMethod::GET);
+            app.log(LogLevel::Debug, "Set method to GET");
+        }
+        KeyCode::Char('2') => {
+            app.http_state.set_method(HttpMethod::POST);
+            app.log(LogLevel::Debug, "Set method to POST");
+        }
+        KeyCode::Char('3') => {
+            app.http_state.set_method(HttpMethod::PUT);
+            app.log(LogLevel::Debug, "Set method to PUT");
+        }
+        KeyCode::Char('4') => {
+            app.http_state.set_method(HttpMethod::DELETE);
+            app.log(LogLevel::Debug, "Set method to DELETE");
+        }
+
+        // Clear current field/content
+        KeyCode::Delete => {
+            match app.http_state.current_request_tab {
+                HttpRequestTab::Headers => {
+                    // Clear all headers
+                    app.http_state.current_request.headers.clear();
+                    app.log(LogLevel::Debug, "Cleared all headers");
+                }
+                HttpRequestTab::Body => {
+                    // Clear body content
+                    app.http_state.set_body(HttpRequestBody::None);
+                    app.log(LogLevel::Debug, "Cleared request body");
+                }
+                HttpRequestTab::QueryParams => {
+                    // Clear all query params
+                    app.http_state.current_request.query_params.clear();
+                    app.log(LogLevel::Debug, "Cleared all query parameters");
+                }
+                _ => {}
+            }
+        }
+
+        // Send HTTP request (F3 or Space)
+        KeyCode::F(3) | KeyCode::Char(' ') => {
+            if let Err(e) = app.send_http_request().await {
+                app.log(
+                    LogLevel::Error,
+                    format!("Failed to send HTTP request: {}", e),
+                );
+            }
+        }
+
+        // New request
+        KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            app.http_state.new_request();
+            app.log(LogLevel::Info, "Created new HTTP request");
+        }
+
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Handle HTTP form keys in edit mode
+async fn handle_http_edit_mode_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Exit edit mode
+        KeyCode::Esc => {
+            app.exit_edit_mode();
+        }
+
+        // Text input (URL editing for now - we'll expand this)
+        KeyCode::Char(c)
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            // For now, just handle URL editing
+            let mut url = app.http_state.current_request.url.clone();
+            url.push(c);
+            app.http_state.set_url(url);
+        }
+
+        // Backspace
+        KeyCode::Backspace if key_event.modifiers.is_empty() => {
+            let mut url = app.http_state.current_request.url.clone();
+            url.pop();
+            app.http_state.set_url(url);
+        }
+
+        // Navigate to next tab (but stay in edit mode)
+        KeyCode::Tab => {
+            app.http_state.next_request_tab();
+            app.log(
+                LogLevel::Debug,
+                format!(
+                    "Moved to {} tab (staying in edit mode)",
+                    app.http_state.current_request_tab.title()
+                ),
+            );
+        }
+        KeyCode::BackTab => {
+            app.http_state.prev_request_tab();
+            app.log(
+                LogLevel::Debug,
+                format!(
+                    "Moved to {} tab (staying in edit mode)",
+                    app.http_state.current_request_tab.title()
+                ),
+            );
+        }
+
+        // Send request even in edit mode
+        KeyCode::F(3) => {
+            if let Err(e) = app.send_http_request().await {
+                app.log(
+                    LogLevel::Error,
+                    format!("Failed to send HTTP request: {}", e),
+                );
+            }
+        }
+
+        _ => {}
+    }
+
+    Ok(())
+}
+
+/// Handle keyboard events for HTTP request editor
+async fn handle_http_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    // Handle keys based on input mode
+    match app.input_mode {
+        InputMode::Normal => handle_http_normal_mode_keys(app, key_event).await?,
+        InputMode::Edit => handle_http_edit_mode_keys(app, key_event).await?,
+    }
+
+    Ok(())
+}
+
 /// TODO: rRemove the template selection
 /// Handle keyboard events for the form
 // async fn handle_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
@@ -761,9 +955,46 @@ async fn handle_edit_mode_keys(app: &mut App, key_event: KeyEvent) -> Result<()>
 //
 //     Ok(())
 // }
-
-/// Handle keyboard events for the logs pane
+/// Handle keyboard events for response viewer (reusing logs pane focus)
 async fn handle_log_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match app.current_mode {
+        AppMode::Automation => handle_automation_log_keys(app, key_event).await,
+        AppMode::Http => handle_http_response_keys(app, key_event).await,
+    }
+}
+
+/// Cycle through HTTP methods
+fn cycle_http_method(app: &mut App) {
+    let methods = HttpMethod::all();
+    let current_index = methods
+        .iter()
+        .position(|m| m == &app.http_state.current_request.method)
+        .unwrap_or(0);
+    let next_index = (current_index + 1) % methods.len();
+
+    app.http_state.set_method(methods[next_index].clone());
+    app.log(
+        LogLevel::Debug,
+        format!(
+            "Cycled method to {}",
+            app.http_state.current_request.method.as_str()
+        ),
+    );
+}
+
+/// Handle the original automation form keys (renamed for clarity)
+async fn handle_automation_form_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    // Handle keys based on input mode
+    match app.input_mode {
+        InputMode::Normal => handle_normal_mode_keys(app, key_event).await?,
+        InputMode::Edit => handle_edit_mode_keys(app, key_event).await?,
+    }
+
+    Ok(())
+}
+
+/// Handle the original automation log keys (renamed for clarity)
+async fn handle_automation_log_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
     // If in search mode, handle search input
     if app.log_search_mode {
         match key_event.code {
@@ -823,7 +1054,6 @@ async fn handle_log_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             KeyCode::PageUp | KeyCode::Char('u')
                 if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                // Page up - scroll multiple lines
                 for _ in 0..10 {
                     app.scroll_logs_up();
                 }
@@ -831,7 +1061,6 @@ async fn handle_log_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             KeyCode::PageDown | KeyCode::Char('d')
                 if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                // Page down - scroll multiple lines
                 for _ in 0..10 {
                     app.scroll_logs_down();
                 }
@@ -862,6 +1091,151 @@ async fn handle_log_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+/// Handle keyboard events for HTTP response viewer
+async fn handle_http_response_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Tab navigation for response viewer
+        KeyCode::Tab => {
+            app.http_state.next_response_tab();
+            app.log(
+                LogLevel::Debug,
+                format!(
+                    "Switched to {} response tab",
+                    app.http_state.current_response_tab.title()
+                ),
+            );
+        }
+        KeyCode::BackTab => {
+            app.http_state.prev_response_tab();
+            app.log(
+                LogLevel::Debug,
+                format!(
+                    "Switched to {} response tab",
+                    app.http_state.current_response_tab.title()
+                ),
+            );
+        }
+
+        // Copy response (TODO: implement clipboard)
+        KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            if let Some(response) = &app.http_state.last_response {
+                // TODO: Copy response body to clipboard
+                app.log(LogLevel::Info, "Response copied to clipboard");
+            }
+        }
+
+        // Clear response
+        KeyCode::Delete => {
+            app.http_state.last_response = None;
+            app.log(LogLevel::Debug, "Cleared response");
+        }
+
+        _ => {}
+    }
+
+    Ok(())
+}
+// TODO: previous version
+/// Handle keyboard events for the logs pane
+// async fn handle_log_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+//     // If in search mode, handle search input
+//     if app.log_search_mode {
+//         match key_event.code {
+//             // Exit search mode
+//             KeyCode::Esc => {
+//                 app.toggle_log_search_mode();
+//                 app.log(LogLevel::Debug, "Exited log search mode");
+//             }
+//
+//             // Search input
+//             KeyCode::Char(c)
+//                 if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+//             {
+//                 app.log_search_query.push(c);
+//             }
+//             KeyCode::Backspace => {
+//                 app.log_search_query.pop();
+//             }
+//             KeyCode::Delete => {
+//                 app.log_search_query.clear();
+//             }
+//
+//             // Allow scrolling even in search mode
+//             KeyCode::Up | KeyCode::Char('k') => {
+//                 app.scroll_logs_up();
+//             }
+//             KeyCode::Down | KeyCode::Char('j') => {
+//                 app.scroll_logs_down();
+//             }
+//             KeyCode::Home | KeyCode::Char('g') => {
+//                 app.scroll_logs_to_top();
+//             }
+//             KeyCode::End | KeyCode::Char('G') => {
+//                 app.scroll_logs_to_bottom();
+//             }
+//
+//             _ => {}
+//         }
+//     } else {
+//         // Normal log navigation mode
+//         match key_event.code {
+//             // Enter search mode
+//             KeyCode::Char('/') => {
+//                 app.toggle_log_search_mode();
+//                 app.log(LogLevel::Debug, "Entered log search mode");
+//             }
+//
+//             // Scroll navigation (vim-style)
+//             KeyCode::Up | KeyCode::Char('k') => {
+//                 app.scroll_logs_up();
+//             }
+//             KeyCode::Down | KeyCode::Char('j') => {
+//                 app.scroll_logs_down();
+//             }
+//
+//             // Page navigation
+//             KeyCode::PageUp | KeyCode::Char('u')
+//                 if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+//             {
+//                 // Page up - scroll multiple lines
+//                 for _ in 0..10 {
+//                     app.scroll_logs_up();
+//                 }
+//             }
+//             KeyCode::PageDown | KeyCode::Char('d')
+//                 if key_event.modifiers.contains(KeyModifiers::CONTROL) =>
+//             {
+//                 // Page down - scroll multiple lines
+//                 for _ in 0..10 {
+//                     app.scroll_logs_down();
+//                 }
+//             }
+//
+//             // Jump to top/bottom (vim-style)
+//             KeyCode::Home | KeyCode::Char('g') => {
+//                 app.scroll_logs_to_top();
+//                 app.log(LogLevel::Debug, "Jumped to top of logs");
+//             }
+//             KeyCode::End | KeyCode::Char('G') => {
+//                 app.scroll_logs_to_bottom();
+//                 app.log(LogLevel::Debug, "Jumped to bottom of logs");
+//             }
+//
+//             // Clear search (if any)
+//             KeyCode::Char('c') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+//                 if !app.log_search_query.is_empty() {
+//                     app.log_search_query.clear();
+//                     app.log(LogLevel::Debug, "Cleared log search");
+//                 }
+//             }
+//
+//             _ => {}
+//         }
+//     }
+//
+//     Ok(())
+// }
+//
 /// Get help text for the current mode and focused pane
 pub fn get_help_text(app: &App) -> Vec<String> {
     let mut help = vec![

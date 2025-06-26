@@ -1,3 +1,7 @@
+use crate::models::http::HttpState;
+use crate::models::http_client::{
+    HttpAuth, HttpHeader, HttpMethod, HttpRequest, HttpRequestBody, HttpResponse,
+};
 use crate::models::{
     AppConfig, ClipboardItem, ClipboardOperation, LogEntry, LogLevel, NodeType, TreeState,
 };
@@ -64,6 +68,9 @@ pub struct App {
 
     /// Automation mode state
     pub automation_state: AutomationState,
+
+    /// HTTP client mode state
+    pub http_state: HttpState,
 
     /// Authentication service
     pub auth_service: AuthService,
@@ -172,6 +179,7 @@ impl App {
             current_mode: AppMode::Automation,
             focused_pane: FocusedPane::Form, // Start with form focused
             automation_state: AutomationState::new(),
+            http_state: HttpState::new(),
             auth_service: AuthService::new(),
             log_entries: Vec::new(),
             // show_logs,
@@ -1745,6 +1753,60 @@ impl App {
         self.help_selected_section = 0;
         self.log(LogLevel::Debug, "Help dialog closed");
     }
+
+    /// Send HTTP request (for HTTP mode)
+    pub async fn send_http_request(&mut self) -> Result<()> {
+        self.log(LogLevel::Debug, "send_http_request() called");
+
+        if self.http_state.is_sending {
+            self.log(LogLevel::Warn, "HTTP request is already being sent");
+            return Ok(());
+        }
+
+        // Check if request is valid
+        if !self.http_state.is_valid() {
+            let errors = self.http_state.get_validation_errors();
+            for error in &errors {
+                self.log(LogLevel::Error, error.clone());
+            }
+            return Ok(());
+        }
+
+        self.http_state.is_sending = true;
+        self.log(LogLevel::Info, "🌐 Sending HTTP request...");
+
+        // Clone the data we need for the background task
+        let request = self.http_state.current_request.clone();
+        let sender = self.message_sender.clone();
+
+        self.log(LogLevel::Debug, "Spawning HTTP request task...");
+
+        // Spawn the HTTP request task
+        tokio::spawn(async move {
+            match send_http_request_impl(request).await {
+                Ok(response) => {
+                    let _ = sender.send(AppMessage::Log(
+                        LogLevel::Success,
+                        format!("✅ HTTP {} {}", response.status_code, response.status_text),
+                    ));
+
+                    // TODO: Send response back to UI
+                    // We'll need a new message type for HTTP responses
+                    let _ = sender.send(AppMessage::Log(
+                        LogLevel::Info,
+                        format!("Response received in {} ms", response.duration_ms),
+                    ));
+                }
+                Err(error) => {
+                    let error_msg = format!("❌ HTTP request failed: {}", error);
+                    let _ = sender.send(AppMessage::Log(LogLevel::Error, error_msg));
+                }
+            }
+        });
+
+        self.log(LogLevel::Debug, "HTTP request task spawned");
+        Ok(())
+    }
 }
 
 fn sanitize_filename(name: &str) -> String {
@@ -1754,4 +1816,123 @@ fn sanitize_filename(name: &str) -> String {
             c => c,
         })
         .collect()
+}
+
+// HTTP request implementation using reqwest
+async fn send_http_request_impl(request: HttpRequest) -> Result<HttpResponse> {
+    use std::time::Instant;
+
+    let start_time = Instant::now();
+
+    // Create reqwest client
+    let client = reqwest::Client::new();
+
+    // Build the request
+    let mut req_builder = match request.method {
+        HttpMethod::GET => client.get(&request.url),
+        HttpMethod::POST => client.post(&request.url),
+        HttpMethod::PUT => client.put(&request.url),
+        HttpMethod::PATCH => client.patch(&request.url),
+        HttpMethod::DELETE => client.delete(&request.url),
+        HttpMethod::HEAD => client.head(&request.url),
+        HttpMethod::OPTIONS => client.request(reqwest::Method::OPTIONS, &request.url),
+    };
+
+    // Add headers
+    for header in &request.headers {
+        if header.enabled {
+            req_builder = req_builder.header(&header.name, &header.value);
+        }
+    }
+
+    // Add query parameters
+    let mut query_params = Vec::new();
+    for param in &request.query_params {
+        if param.enabled {
+            query_params.push((&param.name, &param.value));
+        }
+    }
+    if !query_params.is_empty() {
+        req_builder = req_builder.query(&query_params);
+    }
+
+    // Add body
+    req_builder = match &request.body {
+        HttpRequestBody::None => req_builder,
+        HttpRequestBody::Text {
+            content,
+            content_type,
+        } => req_builder
+            .header("Content-Type", content_type)
+            .body(content.clone()),
+        HttpRequestBody::Json { content } => req_builder
+            .header("Content-Type", "application/json")
+            .body(content.clone()),
+        HttpRequestBody::Raw { content } => req_builder.body(content.clone()),
+        HttpRequestBody::Form { fields } => {
+            let mut form_data = std::collections::HashMap::new();
+            for field in fields {
+                if field.enabled {
+                    form_data.insert(&field.name, &field.value);
+                }
+            }
+            req_builder.form(&form_data)
+        }
+    };
+
+    // Add authentication
+    req_builder = match &request.auth {
+        HttpAuth::None => req_builder,
+        HttpAuth::Basic { username, password } => req_builder.basic_auth(username, Some(password)),
+        HttpAuth::Bearer { token } => req_builder.bearer_auth(token),
+        HttpAuth::ApiKey {
+            key,
+            value,
+            location,
+        } => match location {
+            crate::models::ApiKeyLocation::Header => req_builder.header(key, value),
+            crate::models::ApiKeyLocation::QueryParam => req_builder.query(&[(key, value)]),
+        },
+    };
+
+    // Send the request
+    let response = req_builder.send().await?;
+    let duration_ms = start_time.elapsed().as_millis() as u64;
+
+    // Extract response data
+    let status_code = response.status().as_u16();
+    let status_text = response
+        .status()
+        .canonical_reason()
+        .unwrap_or("Unknown")
+        .to_string();
+
+    // Extract headers
+    let headers: Vec<HttpHeader> = response
+        .headers()
+        .iter()
+        .map(|(name, value)| {
+            HttpHeader::new(name.as_str(), value.to_str().unwrap_or("<invalid utf8>"))
+        })
+        .collect();
+
+    // Extract content type
+    let content_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|ct| ct.to_str().ok())
+        .unwrap_or("text/plain")
+        .to_string();
+
+    // Extract body
+    let body = response.text().await?;
+
+    Ok(HttpResponse {
+        status_code,
+        status_text,
+        headers,
+        body,
+        content_type,
+        duration_ms,
+    })
 }

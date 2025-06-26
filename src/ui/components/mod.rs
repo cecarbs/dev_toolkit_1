@@ -3,6 +3,8 @@ pub mod collections_tree;
 pub mod delete_confirmation_dialog;
 pub mod folder_dialog;
 pub mod help_dialog;
+pub mod http_request_editor;
+pub mod http_response_viewer;
 pub mod logging_panel;
 pub mod rename_dialog;
 pub mod status_line;
