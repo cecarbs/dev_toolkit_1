@@ -140,6 +140,14 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
             app.show_help_dialog();
             return Ok(());
         }
+        // TODO: remove later only used for testing
+        // ADD THIS: Test Python integration
+        // KeyCode::F(9) => {
+        //     if let Err(e) = app.test_real_automation_script().await {
+        //         app.log(LogLevel::Error, format!("Failed to start Python test: {}", e));
+        //     }
+        //     return Ok(());
+        // }
         _ => {}
     }
 

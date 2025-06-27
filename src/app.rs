@@ -5,6 +5,7 @@ use crate::models::http_client::{
 use crate::models::{
     AppConfig, ClipboardItem, ClipboardOperation, LogEntry, LogLevel, NodeType, TreeState,
 };
+use crate::modes::BrowserEngine;
 use crate::modes::automation::AutomationState;
 use crate::services::{AuthService, HttpCollectionStorage, TemplateStorage};
 use anyhow::Result;
@@ -2376,7 +2377,32 @@ impl App {
             self.update_import_file_path(self.import_dialog_file_path.clone());
         }
     }
+
+    /// Test with real automation script
+    pub async fn test_real_automation_script(&mut self) -> Result<()> {
+        self.log(
+            LogLevel::Info,
+            "🧪 Testing real automation script with dummy data...",
+        );
+
+        let sender = self.message_sender.clone();
+
+        tokio::spawn(async move {
+            let browser_engine = BrowserEngine::new(sender.clone());
+
+            if let Err(e) = browser_engine.test_real_automation_script().await {
+                let _ = sender.send(AppMessage::Log(
+                    LogLevel::Error,
+                    format!("Real automation test failed: {}", e),
+                ));
+            }
+        });
+
+        Ok(())
+    }
 }
+
+// === End of App impl ===
 
 fn sanitize_filename(name: &str) -> String {
     name.chars()
