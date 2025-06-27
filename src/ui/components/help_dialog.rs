@@ -336,6 +336,39 @@ fn get_help_sections() -> Vec<HelpSection> {
                     .with_example("Headers•, Body•, Query• indicate populated tabs"),
             ],
         },
+        HelpSection {
+            title: "HTTP Client Collections".to_string(), // NEW section
+            items: vec![
+                HelpItem::new("↑/↓", "Navigate collection tree"),
+                HelpItem::new("Enter", "Load HTTP request into editor"),
+                HelpItem::new("Space", "Toggle folder expansion"),
+                HelpItem::new("Ctrl+N", "Save current request to collection")
+                    .with_example("Fill request editor, then Ctrl+N to save"),
+                HelpItem::new("Ctrl+F", "Create new folder"),
+                HelpItem::new("Ctrl+I or F8", "Import Postman collection") // NEW
+                    .with_example("Import .json collection files from Postman"),
+                HelpItem::new("F2 or R", "Rename collection item"),
+                HelpItem::new("Delete", "Delete collection item"),
+                HelpItem::new("Ctrl+X/C/V", "Cut/copy/paste collection items"),
+                HelpItem::new("F12", "Refresh collections from storage"),
+            ],
+        },
+        HelpSection {
+            title: "Import Postman Collections".to_string(), // NEW section
+            items: vec![
+                HelpItem::new("Type", "Enter file path to .json collection")
+                    .with_example("/Users/username/Downloads/my-api.postman_collection.json"),
+                HelpItem::new("Tab", "Auto-suggest common file locations")
+                    .with_example("Scans Downloads, Desktop, current directory"),
+                HelpItem::new("Ctrl+D", "Quick path to Downloads folder"),
+                HelpItem::new("Ctrl+H", "Quick path to home directory"),
+                HelpItem::new("Ctrl+.", "Quick path to current directory"),
+                HelpItem::new("Enter", "Import the collection (if valid)")
+                    .with_example("Creates folders and requests in HTTP collections tree"),
+                HelpItem::new("Esc", "Cancel import dialog"),
+                HelpItem::new("Delete", "Clear current file path"),
+            ],
+        },
     ]
 }
 /// Filter sections based on selected tab and search query

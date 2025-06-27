@@ -11,6 +11,9 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
     if app.show_help_dialog {
         return handle_help_dialog_keys(app, key_event).await;
     }
+    if app.show_import_dialog {
+        return handle_import_dialog_keys(app, key_event).await;
+    }
     if app.show_delete_confirmation_dialog {
         return handle_delete_confirmation_keys(app, key_event).await;
     }
@@ -145,6 +148,74 @@ pub async fn handle_key_event(app: &mut App, key_event: KeyEvent) -> Result<()> 
         FocusedPane::Collections => handle_tree_keys(app, key_event).await?,
         FocusedPane::Form => handle_form_keys(app, key_event).await?,
         FocusedPane::Logs => handle_log_keys(app, key_event).await?,
+    }
+
+    Ok(())
+}
+
+/// Handle keyboard events for the import dialog
+async fn handle_import_dialog_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
+    match key_event.code {
+        // Cancel import
+        KeyCode::Esc => {
+            app.hide_import_dialog();
+        }
+
+        // Execute import
+        KeyCode::Enter => {
+            if let Err(e) = app.execute_import().await {
+                app.log(LogLevel::Error, format!("Import execution failed: {}", e));
+            }
+        }
+
+        // Text input for file path
+        KeyCode::Char(c) 
+            if key_event.modifiers.is_empty() || key_event.modifiers == KeyModifiers::SHIFT =>
+        {
+            app.import_dialog_add_char(c);
+        }
+
+        // Backspace for text editing
+        KeyCode::Backspace => {
+            app.import_dialog_backspace();
+        }
+
+        // Clear field
+        KeyCode::Delete => {
+            app.import_dialog_clear();
+        }
+
+        // Auto-suggest path (Tab key)
+        KeyCode::Tab => {
+            app.import_dialog_suggest_path();
+        }
+
+        // Quick paths (for common locations)
+        KeyCode::Char('d') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Suggest Downloads folder
+            if let Some(home_dir) = dirs::home_dir() {
+                let downloads_path = home_dir.join("Downloads").join("collection.json");
+                app.import_dialog_file_path = downloads_path.to_string_lossy().to_string();
+                app.update_import_file_path(app.import_dialog_file_path.clone());
+            }
+        }
+
+        KeyCode::Char('h') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Suggest home folder
+            if let Some(home_dir) = dirs::home_dir() {
+                let home_path = home_dir.join("collection.json");
+                app.import_dialog_file_path = home_path.to_string_lossy().to_string();
+                app.update_import_file_path(app.import_dialog_file_path.clone());
+            }
+        }
+
+        KeyCode::Char('.') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            // Suggest current directory
+            app.import_dialog_file_path = "./collection.json".to_string();
+            app.update_import_file_path(app.import_dialog_file_path.clone());
+        }
+
+        _ => {}
     }
 
     Ok(())
@@ -357,29 +428,6 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
         }
 
         // === DELETE OPERATION (Mode-aware) ===
-
-        // Delete selected item
-        // KeyCode::Delete => {
-        //     let item_info = app
-        //         .tree_state
-        //         .get_focused_node()
-        //         .map(|node| (node.path.clone(), node.name.clone(), node.node_type.clone()));
-        //
-        //     if let Some((template_path, name, node_type)) = item_info {
-        //         match node_type {
-        //             NodeType::Template => {
-        //                 if let Err(e) = app.delete_template(&template_path).await {
-        //                     app.log(LogLevel::Error, format!("Failed to delete template: {}", e));
-        //                 }
-        //             }
-        //             NodeType::Folder => {
-        //                 // TODO: Implement folder deletion (requires confirmation)
-        //                 app.log(LogLevel::Warn, "Folder deletion not yet implemented");
-        //             }
-        //         }
-        //     }
-        // }
-
         // Delete selected item (shows confirmation dialog)
         KeyCode::Delete => {
             let item_info = app
@@ -396,16 +444,19 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
         // === IMPORT OPERATIONS (HTTP mode only) ===
         KeyCode::Char('i') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
             if app.current_mode == AppMode::Http {
-                // TODO: Show file picker dialog for importing Postman collections
-                app.log(
-                    LogLevel::Info,
-                    "Import Postman collection (file picker not implemented yet)",
-                );
-                // For now, we can show instructions in logs
-                app.log(
-                    LogLevel::Info,
-                    "To import: place .json file in collections directory",
-                );
+                app.show_import_dialog();
+            } else {
+                app.log(LogLevel::Info, "Import is only available in HTTP Client mode (F4)");
+            }
+        }
+
+
+        // Alternative import shortcut (F8 key)
+        KeyCode::F(8) => {
+            if app.current_mode == AppMode::Http {
+                app.show_import_dialog();
+            } else {
+                app.log(LogLevel::Info, "Import is only available in HTTP Client mode (F4)");
             }
         }
 

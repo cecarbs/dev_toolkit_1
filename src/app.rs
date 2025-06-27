@@ -13,6 +13,14 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 
+#[derive(Debug, Clone)]
+pub struct CollectionPreview {
+    pub name: String,
+    pub request_count: usize,
+    pub folder_count: usize,
+    pub description: Option<String>,
+}
+
 /// Different modes the app can be in
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppMode {
@@ -155,6 +163,12 @@ pub struct App {
     pub show_help_dialog: bool,
     pub help_search_query: String,
     pub help_selected_section: usize, // 0 = All, 1 = Global, 2 = Collections, etc.
+
+    /// Import dialog state
+    pub show_import_dialog: bool,
+    pub import_dialog_file_path: String,
+    pub import_dialog_error: Option<String>,
+    pub import_dialog_preview: Option<CollectionPreview>,
 }
 
 impl App {
@@ -239,6 +253,10 @@ impl App {
             help_search_query: String::new(),
             help_selected_section: 0,
             form_field_cursor_index: 0,
+            show_import_dialog: false,
+            import_dialog_file_path: String::new(),
+            import_dialog_error: None,
+            import_dialog_preview: None,
         };
 
         app.log(LogLevel::Info, "Application started");
@@ -2172,6 +2190,191 @@ impl App {
             LogLevel::Info,
             "For now, use a proper dialog - will implement next",
         );
+    }
+
+    /// Show the import dialog
+    pub fn show_import_dialog(&mut self) {
+        self.show_import_dialog = true;
+        self.import_dialog_file_path.clear();
+        self.import_dialog_error = None;
+        self.import_dialog_preview = None;
+        self.log(LogLevel::Debug, "Import dialog opened");
+    }
+
+    /// Hide the import dialog
+    pub fn hide_import_dialog(&mut self) {
+        self.show_import_dialog = false;
+        self.import_dialog_file_path.clear();
+        self.import_dialog_error = None;
+        self.import_dialog_preview = None;
+        self.log(LogLevel::Debug, "Import dialog closed");
+    }
+
+    /// Update file path and validate/preview
+    pub fn update_import_file_path(&mut self, file_path: String) {
+        self.import_dialog_file_path = file_path;
+        self.import_dialog_error = None;
+        self.import_dialog_preview = None;
+
+        if !self.import_dialog_file_path.trim().is_empty() {
+            // Validate and preview the file
+            match self.validate_and_preview_collection(&self.import_dialog_file_path) {
+                Ok(preview) => {
+                    self.import_dialog_preview = Some(preview);
+                }
+                Err(error) => {
+                    self.import_dialog_error = Some(error);
+                }
+            }
+        }
+    }
+
+    /// Validate file and create preview
+    fn validate_and_preview_collection(
+        &self,
+        file_path: &str,
+    ) -> Result<CollectionPreview, String> {
+        use std::path::Path;
+
+        let path = Path::new(file_path);
+
+        // Check if file exists
+        if !path.exists() {
+            return Err("File does not exist".to_string());
+        }
+
+        // Check if it's a file
+        if !path.is_file() {
+            return Err("Path is not a file".to_string());
+        }
+
+        // Try to read and parse the file
+        let json_content =
+            std::fs::read_to_string(path).map_err(|e| format!("Failed to read file: {}", e))?;
+
+        // Parse as Postman collection
+        let collection: crate::services::http_collection_storage::PostmanCollection =
+            serde_json::from_str(&json_content)
+                .map_err(|e| format!("Invalid Postman collection format: {}", e))?;
+
+        // Count requests and folders
+        let (request_count, folder_count) = self.count_collection_items(&collection.item);
+
+        Ok(CollectionPreview {
+            name: collection.info.name,
+            request_count,
+            folder_count,
+            description: collection.info.description,
+        })
+    }
+
+    /// Recursively count requests and folders in collection items
+    fn count_collection_items(
+        &self,
+        items: &[crate::services::http_collection_storage::PostmanItem],
+    ) -> (usize, usize) {
+        let mut request_count = 0;
+        let mut folder_count = 0;
+
+        for item in items {
+            match item {
+                crate::services::http_collection_storage::PostmanItem::Request(_) => {
+                    request_count += 1;
+                }
+                crate::services::http_collection_storage::PostmanItem::Folder(folder) => {
+                    folder_count += 1;
+                    let (sub_requests, sub_folders) = self.count_collection_items(&folder.item);
+                    request_count += sub_requests;
+                    folder_count += sub_folders;
+                }
+            }
+        }
+
+        (request_count, folder_count)
+    }
+
+    /// Execute the import
+    pub async fn execute_import(&mut self) -> Result<()> {
+        if self.import_dialog_preview.is_none() {
+            self.import_dialog_error = Some("No valid collection to import".to_string());
+            return Ok(());
+        }
+
+        let import_dialog_path = &self.import_dialog_file_path.clone();
+
+        let file_path = std::path::Path::new(import_dialog_path);
+
+        match self.import_postman_collection(file_path).await {
+            Ok(()) => {
+                let preview = self.import_dialog_preview.as_ref().unwrap();
+                self.log(
+                    LogLevel::Success,
+                    format!(
+                        "Successfully imported '{}' ({} requests, {} folders)",
+                        preview.name, preview.request_count, preview.folder_count
+                    ),
+                );
+                self.hide_import_dialog();
+            }
+            Err(e) => {
+                self.import_dialog_error = Some(format!("Import failed: {}", e));
+                self.log(LogLevel::Error, format!("Import failed: {}", e));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Add character to file path
+    pub fn import_dialog_add_char(&mut self, c: char) {
+        self.import_dialog_file_path.push(c);
+        self.update_import_file_path(self.import_dialog_file_path.clone());
+    }
+
+    /// Remove character from file path
+    pub fn import_dialog_backspace(&mut self) {
+        self.import_dialog_file_path.pop();
+        self.update_import_file_path(self.import_dialog_file_path.clone());
+    }
+
+    /// Clear file path
+    pub fn import_dialog_clear(&mut self) {
+        self.import_dialog_file_path.clear();
+        self.update_import_file_path(self.import_dialog_file_path.clone());
+    }
+
+    /// Suggest common file paths
+    pub fn import_dialog_suggest_path(&mut self) {
+        // Try to suggest common locations
+        if let Some(home_dir) = dirs::home_dir() {
+            let suggestions = [
+                home_dir.join("Downloads").join("collection.json"),
+                home_dir.join("Desktop").join("collection.json"),
+                std::path::PathBuf::from("./collection.json"),
+            ];
+
+            for suggestion in &suggestions {
+                if suggestion.exists() {
+                    self.import_dialog_file_path = suggestion.to_string_lossy().to_string();
+                    self.update_import_file_path(self.import_dialog_file_path.clone());
+                    self.log(
+                        LogLevel::Info,
+                        format!("Found collection at: {}", suggestion.display()),
+                    );
+                    return;
+                }
+            }
+        }
+
+        // If no suggestions found, provide a template
+        if let Some(home_dir) = dirs::home_dir() {
+            self.import_dialog_file_path = home_dir
+                .join("Downloads")
+                .join("my-collection.json")
+                .to_string_lossy()
+                .to_string();
+            self.update_import_file_path(self.import_dialog_file_path.clone());
+        }
     }
 }
 

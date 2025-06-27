@@ -146,6 +146,7 @@ fn get_contextual_status_text(app: &App) -> Line<'static> {
         }
 
         // ========== HTTP CLIENT MODE ==========
+        // UPDATE the HTTP collections tree status line
         (AppMode::Http, FocusedPane::Collections, _) => Line::from(vec![
             key("↑/↓"),
             desc(":navigate"),
@@ -161,6 +162,12 @@ fn get_contextual_status_text(app: &App) -> Line<'static> {
             separator(),
             key("Ctrl+F"),
             desc(":new folder"),
+            separator(),
+            key("Ctrl+I"),
+            desc(":import collection"), // NEW
+            separator(),
+            key("F8"),
+            desc(":import"), // NEW - Alternative shortcut
             separator(),
             key("F2/R"),
             desc(":rename"),
