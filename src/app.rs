@@ -6,7 +6,7 @@ use crate::models::{
     AppConfig, ClipboardItem, ClipboardOperation, LogEntry, LogLevel, NodeType, TreeState,
 };
 use crate::modes::automation::AutomationState;
-use crate::services::{AuthService, TemplateStorage};
+use crate::services::{AuthService, HttpCollectionStorage, TemplateStorage};
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
@@ -61,7 +61,10 @@ pub struct App {
     /// Template storage service
     pub template_storage: TemplateStorage,
 
-    /// Collections tree state
+    /// /// HTTP collection storage service  // NEW
+    pub http_collection_storage: HttpCollectionStorage,
+
+    // NEWCollections tree state
     pub tree_state: TreeState,
 
     /// Current mode (Automation or HTTP)
@@ -171,14 +174,26 @@ impl App {
             eprintln!("Failed to initialize template storage: {}", e);
         }
 
+        // Initialize HTTP collection storage
+        let http_collection_storage = HttpCollectionStorage::new(config.clone()); // NEW
+        if let Err(e) = http_collection_storage.initialize() {
+            // NEW
+            eprintln!("Failed to initialize HTTP collection storage: {}", e); // NEW
+        } // NEW
+
         // Build the initial tree state
-        let tree_state = Self::build_initial_tree_state(&template_storage);
+        let tree_state = Self::build_initial_tree_state_for_mode(
+            &template_storage,
+            &http_collection_storage,
+            &AppMode::Automation,
+        );
 
         let show_logs = config.show_logs_on_startup;
 
         let mut app = Self {
             config,
             template_storage,
+            http_collection_storage,
             tree_state,
             current_mode: AppMode::Automation,
             focused_pane: FocusedPane::Form, // Start with form focused
@@ -234,7 +249,70 @@ impl App {
                 app.template_storage.get_templates_directory_display()
             ),
         );
+
+        app.log(
+            LogLevel::Info,
+            format!(
+                // NEW
+                "HTTP collections directory: {}",
+                app.http_collection_storage
+                    .get_collections_directory_display()
+            ),
+        );
         app
+    }
+
+    fn build_initial_tree_state_for_mode(
+        template_storage: &TemplateStorage,
+        http_collection_storage: &HttpCollectionStorage,
+        mode: &AppMode,
+    ) -> TreeState {
+        match mode {
+            AppMode::Automation => {
+                // Use template storage for automation mode
+                let folders = template_storage.list_all_folders().unwrap_or_default();
+                let mut templates_by_folder = HashMap::new();
+
+                for folder in &folders {
+                    if let Ok(templates) = template_storage.list_templates_in_folder(folder) {
+                        if !templates.is_empty() {
+                            templates_by_folder.insert(folder.clone(), templates);
+                        }
+                    }
+                }
+
+                if let Ok(root_templates) = template_storage.list_templates_in_folder("") {
+                    if !root_templates.is_empty() {
+                        templates_by_folder.insert("".to_string(), root_templates);
+                    }
+                }
+
+                TreeState::build_from_storage(folders, templates_by_folder)
+            }
+            AppMode::Http => {
+                // Use HTTP collection storage for HTTP mode
+                let folders = http_collection_storage
+                    .list_all_folders()
+                    .unwrap_or_default();
+                let mut requests_by_folder = HashMap::new();
+
+                for folder in &folders {
+                    if let Ok(requests) = http_collection_storage.list_requests_in_folder(folder) {
+                        if !requests.is_empty() {
+                            requests_by_folder.insert(folder.clone(), requests);
+                        }
+                    }
+                }
+
+                if let Ok(root_requests) = http_collection_storage.list_requests_in_folder("") {
+                    if !root_requests.is_empty() {
+                        requests_by_folder.insert("".to_string(), root_requests);
+                    }
+                }
+
+                TreeState::build_from_storage(folders, requests_by_folder)
+            }
+        }
     }
 
     /// Build the initial tree state from template storage
@@ -416,10 +494,18 @@ impl App {
         // If user has scrolled up, don't auto-scroll (let them stay where they are)
     }
 
-    /// Switch to a different mode
+    /// Switch to a different mode (refresh tree when mode changes)
     pub fn switch_mode(&mut self, mode: AppMode) {
         if mode != self.current_mode {
             self.current_mode = mode.clone();
+
+            // Refresh tree state for the new mode
+            self.tree_state = Self::build_initial_tree_state_for_mode(
+                &self.template_storage,
+                &self.http_collection_storage,
+                &mode,
+            );
+
             self.log(LogLevel::Info, format!("Switched to {:?} mode", mode));
         }
     }
@@ -616,70 +702,201 @@ impl App {
     pub fn get_message_sender(&self) -> mpsc::UnboundedSender<AppMessage> {
         self.message_sender.clone()
     }
+
+    // TODO: remove this later - old method before implementation of collections tree
     /// Refresh tree state from template storage
+    // pub async fn refresh_tree_from_storage(&mut self) -> Result<()> {
+    //     use std::collections::HashMap;
+    //
+    //     // Get all folders and templates from storage
+    //     let folders = self.template_storage.list_all_folders().unwrap_or_default();
+    //     let mut templates_by_folder = HashMap::new();
+    //
+    //     // Get templates for each folder
+    //     for folder in &folders {
+    //         if let Ok(templates) = self.template_storage.list_templates_in_folder(folder) {
+    //             if !templates.is_empty() {
+    //                 templates_by_folder.insert(folder.clone(), templates);
+    //             }
+    //         }
+    //     }
+    //
+    //     // Also check for templates in the root directory
+    //     if let Ok(root_templates) = self.template_storage.list_templates_in_folder("") {
+    //         if !root_templates.is_empty() {
+    //             templates_by_folder.insert("".to_string(), root_templates);
+    //         }
+    //     }
+    //
+    //     // Rebuild tree state
+    //     self.tree_state =
+    //         crate::models::TreeState::build_from_storage(folders, templates_by_folder);
+    //
+    //     self.log(LogLevel::Debug, "Tree state refreshed from storage");
+    //     Ok(())
+    // }
+    //
+    // UPDATE refresh_tree_from_storage to be mode-aware
+    /// Refresh tree state from storage based on current mode
     pub async fn refresh_tree_from_storage(&mut self) -> Result<()> {
-        use std::collections::HashMap;
+        self.tree_state = Self::build_initial_tree_state_for_mode(
+            &self.template_storage,
+            &self.http_collection_storage,
+            &self.current_mode,
+        );
 
-        // Get all folders and templates from storage
-        let folders = self.template_storage.list_all_folders().unwrap_or_default();
-        let mut templates_by_folder = HashMap::new();
+        let mode_name = match self.current_mode {
+            AppMode::Automation => "automation templates",
+            AppMode::Http => "HTTP collections",
+        };
 
-        // Get templates for each folder
-        for folder in &folders {
-            if let Ok(templates) = self.template_storage.list_templates_in_folder(folder) {
-                if !templates.is_empty() {
-                    templates_by_folder.insert(folder.clone(), templates);
-                }
-            }
-        }
-
-        // Also check for templates in the root directory
-        if let Ok(root_templates) = self.template_storage.list_templates_in_folder("") {
-            if !root_templates.is_empty() {
-                templates_by_folder.insert("".to_string(), root_templates);
-            }
-        }
-
-        // Rebuild tree state
-        self.tree_state =
-            crate::models::TreeState::build_from_storage(folders, templates_by_folder);
-
-        self.log(LogLevel::Debug, "Tree state refreshed from storage");
+        self.log(
+            LogLevel::Debug,
+            format!("Tree state refreshed from {} storage", mode_name),
+        );
         Ok(())
     }
 
-    /// Load a template from storage into the automation form
-    pub async fn load_template_into_form(&mut self, template_path: &str) -> Result<()> {
-        // Parse the template path to get folder and template name
-        let (folder_path, template_name) = if let Some(pos) = template_path.rfind('/') {
-            (&template_path[..pos], &template_path[pos + 1..])
+    /// Load an HTTP request from storage into the HTTP form
+    pub async fn load_http_request_into_form(&mut self, request_path: &str) -> Result<()> {
+        let (folder_path, request_name) = if let Some(pos) = request_path.rfind('/') {
+            (&request_path[..pos], &request_path[pos + 1..])
         } else {
-            ("", template_path)
+            ("", request_path)
         };
 
-        // Load the template from storage
         match self
-            .template_storage
-            .load_template(folder_path, template_name)
+            .http_collection_storage
+            .load_request(folder_path, request_name)
         {
-            Ok(stored_template) => {
-                // Apply the template to the form fields
-                stored_template
-                    .template
-                    .apply_to_fields(&mut self.automation_state.fields);
+            Ok(stored_request) => {
+                self.http_state.load_request(stored_request.request);
                 self.log(
                     LogLevel::Success,
-                    format!("Loaded template: {}", template_name),
+                    format!("Loaded HTTP request: {}", request_name),
                 );
                 Ok(())
             }
             Err(e) => {
-                self.log(LogLevel::Error, format!("Failed to load template: {}", e));
+                self.log(
+                    LogLevel::Error,
+                    format!("Failed to load HTTP request: {}", e),
+                );
                 Err(e)
             }
         }
     }
 
+    /// Save current HTTP request as collection item
+    pub async fn save_http_request_to_collection(
+        &mut self,
+        folder_path: &str,
+        request_name: &str,
+    ) -> Result<()> {
+        let request = self.http_state.current_request.clone();
+
+        match self
+            .http_collection_storage
+            .save_request(folder_path, request_name, request)
+        {
+            Ok(_) => {
+                self.log(
+                    LogLevel::Success,
+                    format!("Saved HTTP request: {}", request_name),
+                );
+                self.refresh_tree_from_storage().await?;
+                Ok(())
+            }
+            Err(e) => {
+                self.log(
+                    LogLevel::Error,
+                    format!("Failed to save HTTP request: {}", e),
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Delete HTTP request
+    pub async fn delete_http_request(&mut self, request_path: &str) -> Result<()> {
+        let (folder_path, request_name) = if let Some(pos) = request_path.rfind('/') {
+            (&request_path[..pos], &request_path[pos + 1..])
+        } else {
+            ("", request_path)
+        };
+
+        self.http_collection_storage
+            .delete_request(folder_path, request_name)?;
+        self.log(
+            LogLevel::Success,
+            format!("Deleted HTTP request: {}", request_name),
+        );
+        self.refresh_tree_from_storage().await?;
+        Ok(())
+    }
+
+    // 10. ADD NEW METHOD - Import Postman collection
+    pub async fn import_postman_collection(&mut self, file_path: &std::path::Path) -> Result<()> {
+        match self
+            .http_collection_storage
+            .import_postman_collection(file_path)
+        {
+            Ok(()) => {
+                self.log(
+                    LogLevel::Success,
+                    format!("Imported Postman collection: {}", file_path.display()),
+                );
+                self.refresh_tree_from_storage().await?;
+                Ok(())
+            }
+            Err(e) => {
+                self.log(
+                    LogLevel::Error,
+                    format!("Failed to import Postman collection: {}", e),
+                );
+                Err(e)
+            }
+        }
+    }
+
+    /// Load a template from storage into the automation form
+    // Update the existing load_template_into_form method to be mode-aware
+    pub async fn load_template_into_form(&mut self, template_path: &str) -> Result<()> {
+        match self.current_mode {
+            AppMode::Automation => {
+                // Existing template loading logic
+                let (folder_path, template_name) = if let Some(pos) = template_path.rfind('/') {
+                    (&template_path[..pos], &template_path[pos + 1..])
+                } else {
+                    ("", template_path)
+                };
+
+                match self
+                    .template_storage
+                    .load_template(folder_path, template_name)
+                {
+                    Ok(stored_template) => {
+                        stored_template
+                            .template
+                            .apply_to_fields(&mut self.automation_state.fields);
+                        self.log(
+                            LogLevel::Success,
+                            format!("Loaded template: {}", template_name),
+                        );
+                        Ok(())
+                    }
+                    Err(e) => {
+                        self.log(LogLevel::Error, format!("Failed to load template: {}", e));
+                        Err(e)
+                    }
+                }
+            }
+            AppMode::Http => {
+                // Load HTTP request
+                self.load_http_request_into_form(template_path).await
+            }
+        }
+    }
     /// Create a new template from current form state
     pub async fn create_template_from_form(
         &mut self,
@@ -739,12 +956,10 @@ impl App {
 
     /// Show the template creation dialog
     pub fn show_template_creation_dialog(&mut self) {
-        // Pre-populate with smart defaults
         let focused_folder = if let Some(focused_node) = self.tree_state.get_focused_node() {
             match focused_node.node_type {
                 NodeType::Folder => focused_node.path.clone(),
                 NodeType::Template => {
-                    // Get parent folder
                     if let Some(parent_pos) = focused_node.path.rfind('/') {
                         focused_node.path[..parent_pos].to_string()
                     } else {
@@ -757,12 +972,31 @@ impl App {
         };
 
         self.show_template_dialog = true;
-        self.template_dialog_name = "New Template".to_string();
+
+        // Mode-specific defaults
+        match self.current_mode {
+            AppMode::Automation => {
+                self.template_dialog_name = "New Template".to_string();
+                self.template_dialog_description = "Template created from form".to_string();
+            }
+            AppMode::Http => {
+                let method = self.http_state.current_request.method.as_str();
+                self.template_dialog_name = format!("New {} Request", method);
+                self.template_dialog_description = "HTTP request saved from editor".to_string();
+            }
+        }
+
         self.template_dialog_folder = focused_folder;
-        self.template_dialog_description = "Template created from form".to_string();
         self.template_dialog_focused_field = 0;
 
-        self.log(LogLevel::Debug, "Template creation dialog opened");
+        let item_type = match self.current_mode {
+            AppMode::Automation => "template",
+            AppMode::Http => "HTTP request",
+        };
+        self.log(
+            LogLevel::Debug,
+            format!("{} creation dialog opened", item_type),
+        );
     }
 
     /// Hide the template creation dialog
@@ -776,56 +1010,96 @@ impl App {
         self.log(LogLevel::Debug, "Template creation dialog closed");
     }
 
-    /// Create template with dialog values
+    /// Create_template_from_dialog to be mode-aware
     pub async fn create_template_from_dialog(&mut self) -> Result<()> {
         if self.template_dialog_name.trim().is_empty() {
-            self.log(LogLevel::Error, "Template name cannot be empty");
+            self.log(LogLevel::Error, "Name cannot be empty");
             return Ok(());
         }
 
-        use crate::models::AutomationTemplate;
+        match self.current_mode {
+            AppMode::Automation => {
+                // Existing template creation logic
+                use crate::models::AutomationTemplate;
 
-        // Create template from current form values
-        let mut template = AutomationTemplate::new(
-            &self.template_dialog_name,
-            &self.template_dialog_description,
-        );
-
-        // Add current field values to template
-        for field in &self.automation_state.fields {
-            if !field.value.is_empty() {
-                template = template.with_field(&field.name, &field.value);
-            }
-        }
-
-        // Save to storage
-        match self.template_storage.save_template(
-            &self.template_dialog_folder,
-            &self.template_dialog_name,
-            template,
-        ) {
-            Ok(_) => {
-                self.log(
-                    LogLevel::Success,
-                    format!(
-                        "Created template '{}' in folder '{}'",
-                        self.template_dialog_name,
-                        if self.template_dialog_folder.is_empty() {
-                            "Root"
-                        } else {
-                            &self.template_dialog_folder
-                        }
-                    ),
+                let mut template = AutomationTemplate::new(
+                    &self.template_dialog_name,
+                    &self.template_dialog_description,
                 );
 
-                // Refresh tree and hide dialog
-                self.refresh_tree_from_storage().await?;
-                self.hide_template_creation_dialog();
-                Ok(())
+                for field in &self.automation_state.fields {
+                    if !field.value.is_empty() {
+                        template = template.with_field(&field.name, &field.value);
+                    }
+                }
+
+                match self.template_storage.save_template(
+                    &self.template_dialog_folder,
+                    &self.template_dialog_name,
+                    template,
+                ) {
+                    Ok(_) => {
+                        self.log(
+                            LogLevel::Success,
+                            format!(
+                                "Created template '{}' in folder '{}'",
+                                self.template_dialog_name,
+                                if self.template_dialog_folder.is_empty() {
+                                    "Root"
+                                } else {
+                                    &self.template_dialog_folder
+                                }
+                            ),
+                        );
+
+                        self.refresh_tree_from_storage().await?;
+                        self.hide_template_creation_dialog();
+                        Ok(())
+                    }
+                    Err(e) => {
+                        self.log(LogLevel::Error, format!("Failed to save template: {}", e));
+                        Err(e)
+                    }
+                }
             }
-            Err(e) => {
-                self.log(LogLevel::Error, format!("Failed to save template: {}", e));
-                Err(e)
+            AppMode::Http => {
+                // HTTP request creation logic
+                let request = self.http_state.current_request.clone();
+                let mut updated_request = request;
+                updated_request.name = self.template_dialog_name.clone();
+                updated_request.description = self.template_dialog_description.clone();
+
+                match self.http_collection_storage.save_request(
+                    &self.template_dialog_folder,
+                    &self.template_dialog_name,
+                    updated_request,
+                ) {
+                    Ok(_) => {
+                        self.log(
+                            LogLevel::Success,
+                            format!(
+                                "Created HTTP request '{}' in folder '{}'",
+                                self.template_dialog_name,
+                                if self.template_dialog_folder.is_empty() {
+                                    "Root"
+                                } else {
+                                    &self.template_dialog_folder
+                                }
+                            ),
+                        );
+
+                        self.refresh_tree_from_storage().await?;
+                        self.hide_template_creation_dialog();
+                        Ok(())
+                    }
+                    Err(e) => {
+                        self.log(
+                            LogLevel::Error,
+                            format!("Failed to save HTTP request: {}", e),
+                        );
+                        Err(e)
+                    }
+                }
             }
         }
     }
@@ -866,7 +1140,7 @@ impl App {
         self.log(LogLevel::Debug, "Folder creation dialog closed");
     }
 
-    /// Create folder with dialog values
+    /// Create folder with dialog values (mode-aware)
     pub async fn create_folder_from_dialog(&mut self) -> Result<()> {
         // Validate folder name
         if let Err(error) =
@@ -883,16 +1157,26 @@ impl App {
             format!("{}/{}", self.folder_dialog_parent, self.folder_dialog_name)
         };
 
-        // Create the folder on disk
-        let templates_dir = self.config.get_templates_directory();
-        let folder_path = templates_dir.join(&full_path);
+        // FIXED: Use mode-aware base directory
+        let base_dir = match self.current_mode {
+            AppMode::Automation => self.config.get_templates_directory().clone(),
+            AppMode::Http => self.http_collection_storage.get_collections_directory(),
+        };
+
+        let folder_path = base_dir.join(&full_path);
 
         match std::fs::create_dir_all(&folder_path) {
             Ok(()) => {
+                let mode_name = match self.current_mode {
+                    AppMode::Automation => "template",
+                    AppMode::Http => "HTTP collection",
+                };
+
                 self.log(
                     LogLevel::Success,
                     format!(
-                        "Created folder: {}",
+                        "Created {} folder: {}",
+                        mode_name,
                         if full_path.is_empty() {
                             "Root"
                         } else {
@@ -915,7 +1199,7 @@ impl App {
         }
     }
 
-    /// Validate folder name and path
+    /// Validate folder name and path (Mode-aware)
     fn validate_folder_name(&self, name: &str, parent: &str) -> Result<(), String> {
         // Check if name is empty
         if name.trim().is_empty() {
@@ -935,8 +1219,13 @@ impl App {
             format!("{}/{}", parent, name)
         };
 
-        let templates_dir = self.config.get_templates_directory();
-        let folder_path = templates_dir.join(&full_path);
+        // FIXED: Use mode-aware base directory
+        let base_dir = match self.current_mode {
+            AppMode::Automation => self.config.get_templates_directory().clone(),
+            AppMode::Http => self.http_collection_storage.get_collections_directory(),
+        };
+
+        let folder_path = base_dir.join(&full_path);
 
         if folder_path.exists() {
             return Err("Folder already exists".to_string());
@@ -1560,21 +1849,34 @@ impl App {
         self.log(LogLevel::Debug, "Delete confirmation dialog closed");
     }
 
-    /// Perform the confirmed deletion
+    /// Perform the confirmed deletion (mode-aware)
     pub async fn confirm_deletion(&mut self) -> Result<()> {
         if self.delete_confirmation_is_folder {
             self.delete_folder_confirmed(&self.delete_confirmation_item_path.clone())
                 .await
         } else {
-            self.delete_template(&self.delete_confirmation_item_path.clone())
-                .await
+            // Mode-aware template/request deletion
+            match self.current_mode {
+                AppMode::Automation => {
+                    self.delete_template(&self.delete_confirmation_item_path.clone())
+                        .await
+                }
+                AppMode::Http => {
+                    self.delete_http_request(&self.delete_confirmation_item_path.clone())
+                        .await
+                }
+            }
         }
     }
 
-    /// Delete folder after confirmation
+    /// Delete folder after confirmation (works for both modes)
     async fn delete_folder_confirmed(&mut self, folder_path: &str) -> Result<()> {
-        let templates_dir = self.config.get_templates_directory();
-        let full_folder_path = templates_dir.join(folder_path);
+        let base_dir = match self.current_mode {
+            AppMode::Automation => self.config.get_templates_directory().clone(),
+            AppMode::Http => self.http_collection_storage.get_collections_directory(),
+        };
+
+        let full_folder_path = base_dir.join(folder_path);
 
         if !full_folder_path.exists() {
             self.log(LogLevel::Error, "Folder no longer exists");
@@ -1582,18 +1884,20 @@ impl App {
             return Ok(());
         }
 
-        // Recursively delete the folder and all its contents
         match std::fs::remove_dir_all(&full_folder_path) {
             Ok(()) => {
+                let mode_name = match self.current_mode {
+                    AppMode::Automation => "templates",
+                    AppMode::Http => "HTTP requests",
+                };
                 self.log(
                     LogLevel::Success,
                     format!(
-                        "Deleted folder '{}' and all its contents",
-                        self.delete_confirmation_item_name
+                        "Deleted {} folder '{}' and all its contents",
+                        mode_name, self.delete_confirmation_item_name
                     ),
                 );
 
-                // Refresh tree and hide dialog
                 self.refresh_tree_from_storage().await?;
                 self.hide_delete_confirmation_dialog();
                 Ok(())
@@ -1607,10 +1911,14 @@ impl App {
         }
     }
 
-    /// Scan folder contents for confirmation dialog
+    /// Scan folder contents for confirmation dialog (mode-aware)
     fn scan_folder_contents(&self, folder_path: &str) -> Vec<String> {
-        let templates_dir = self.config.get_templates_directory();
-        let full_folder_path = templates_dir.join(folder_path);
+        let base_dir = match self.current_mode {
+            AppMode::Automation => self.config.get_templates_directory().clone(),
+            AppMode::Http => self.http_collection_storage.get_collections_directory(),
+        };
+
+        let full_folder_path = base_dir.join(folder_path);
 
         let mut contents = Vec::new();
 
@@ -1822,6 +2130,48 @@ impl App {
 
         self.log(LogLevel::Debug, "HTTP request task spawned");
         Ok(())
+    }
+    /// Show HTTP request creation dialog (placeholder for now)
+    pub fn show_http_request_creation_dialog(&mut self) {
+        // For now, let's create a quick save with a default name
+        // Later we can implement a proper dialog similar to template_creation_dialog
+
+        let focused_folder = if let Some(focused_node) = self.tree_state.get_focused_node() {
+            match focused_node.node_type {
+                NodeType::Folder => focused_node.path.clone(),
+                NodeType::Template => {
+                    if let Some(parent_pos) = focused_node.path.rfind('/') {
+                        focused_node.path[..parent_pos].to_string()
+                    } else {
+                        "".to_string()
+                    }
+                }
+            }
+        } else {
+            "".to_string()
+        };
+
+        // Quick save with auto-generated name for now
+        let request_name = format!(
+            "{} Request",
+            self.http_state.current_request.method.as_str()
+        );
+
+        tokio::spawn(async move {
+            // We'll implement proper async save later
+        });
+
+        self.log(
+            LogLevel::Info,
+            format!(
+                "TODO: Implement HTTP request save dialog. Would save to: {}",
+                focused_folder
+            ),
+        );
+        self.log(
+            LogLevel::Info,
+            "For now, use a proper dialog - will implement next",
+        );
     }
 }
 

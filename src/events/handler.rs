@@ -230,7 +230,7 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             app.log(LogLevel::Debug, "Tree: moved focus down");
         }
 
-        // Expand/collapse or load template
+        // Expand/collapse or load template/request
         KeyCode::Enter => {
             let node_info = app
                 .tree_state
@@ -244,10 +244,28 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
                         app.log(LogLevel::Debug, format!("Tree: toggled folder {}", name));
                     }
                     NodeType::Template => {
-                        if let Err(e) = app.load_template_into_form(&path).await {
-                            app.log(LogLevel::Error, format!("Failed to load template: {}", e));
-                        } else {
-                            app.focus_pane(FocusedPane::Form);
+                        // Mode-aware loading
+                        match app.current_mode {
+                            AppMode::Automation => {
+                                if let Err(e) = app.load_template_into_form(&path).await {
+                                    app.log(
+                                        LogLevel::Error,
+                                        format!("Failed to load template: {}", e),
+                                    );
+                                } else {
+                                    app.focus_pane(FocusedPane::Form);
+                                }
+                            }
+                            AppMode::Http => {
+                                if let Err(e) = app.load_http_request_into_form(&path).await {
+                                    app.log(
+                                        LogLevel::Error,
+                                        format!("Failed to load HTTP request: {}", e),
+                                    );
+                                } else {
+                                    app.focus_pane(FocusedPane::Form);
+                                }
+                            }
                         }
                     }
                 }
@@ -283,12 +301,21 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
 
         // === CREATION OPERATIONS ===
 
-        // Create new template from form
+        // Create new template/request from form
         KeyCode::Char('n') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
-            app.show_template_creation_dialog();
+            match app.current_mode {
+                AppMode::Automation => {
+                    app.show_template_creation_dialog();
+                }
+                AppMode::Http => {
+                    // For HTTP mode, we'll need a similar dialog for saving requests
+                    // For now, let's create a simple version
+                    app.show_http_request_creation_dialog(); // We'll implement this next
+                }
+            }
         }
 
-        // Create new folder
+        // Create new folder (works for both modes)
         KeyCode::Char('f') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
             app.show_folder_creation_dialog();
         }
@@ -329,7 +356,7 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             app.clear_clipboard();
         }
 
-        // === DELETE OPERATION ===
+        // === DELETE OPERATION (Mode-aware) ===
 
         // Delete selected item
         // KeyCode::Delete => {
@@ -366,6 +393,22 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             }
         }
 
+        // === IMPORT OPERATIONS (HTTP mode only) ===
+        KeyCode::Char('i') if key_event.modifiers.contains(KeyModifiers::CONTROL) => {
+            if app.current_mode == AppMode::Http {
+                // TODO: Show file picker dialog for importing Postman collections
+                app.log(
+                    LogLevel::Info,
+                    "Import Postman collection (file picker not implemented yet)",
+                );
+                // For now, we can show instructions in logs
+                app.log(
+                    LogLevel::Info,
+                    "To import: place .json file in collections directory",
+                );
+            }
+        }
+
         // === UTILITY OPERATIONS ===
 
         // Refresh tree
@@ -373,13 +416,23 @@ async fn handle_tree_keys(app: &mut App, key_event: KeyEvent) -> Result<()> {
             if let Err(e) = app.refresh_tree_from_storage().await {
                 app.log(LogLevel::Error, format!("Failed to refresh tree: {}", e));
             } else {
-                app.log(LogLevel::Success, "Tree refreshed from storage");
+                let mode_name = match app.current_mode {
+                    AppMode::Automation => "automation templates",
+                    AppMode::Http => "HTTP collections",
+                };
+                app.log(LogLevel::Success, format!("Refreshed {} tree", mode_name));
             }
         }
 
         // Show help
         KeyCode::F(1) => {
-            app.log(LogLevel::Info, "Tree Help: ↑/↓=Navigate, Enter=Load/Expand, Space=Toggle, Ctrl+N=New Template, Ctrl+F=New Folder, F2/R=Rename, Ctrl+X/C/V=Cut/Copy/Paste, Del=Delete, F12=Refresh");
+            let mode_name = match app.current_mode {
+                AppMode::Automation => "Automation",
+                AppMode::Http => "HTTP Client",
+            };
+            app.log(LogLevel::Info, 
+                format!("{} Tree Help: ↑/↓=Navigate, Enter=Load/Expand, Space=Toggle, Ctrl+N=New, Ctrl+F=Folder, F2/R=Rename, Del=Delete, F12=Refresh", mode_name)
+            );
         }
 
         _ => {}
