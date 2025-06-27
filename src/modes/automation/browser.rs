@@ -1,7 +1,8 @@
 use crate::app::AppMessage;
-use crate::models::{FieldType, FormField, LogLevel, WebsiteConfig};
+use crate::models::{FormField, LogLevel, WebsiteConfig};
 use crate::modes::automation::Credentials;
 use anyhow::{Context, Result};
+use include_dir::{Dir, include_dir};
 use serde_json;
 use std::process::Stdio;
 use tokio::fs;
@@ -9,10 +10,10 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc;
 
-// Embed your Python script directly in the binary
-const PYTHON_AUTOMATION_SCRIPT: &str = include_str!("../../../scripts/automation_script.py");
+// Embed the entire Python project directory in the binary
+static PYTHON_PROJECT: Dir<'_> = include_dir!("$CARGO_MANIFEST_DIR/scripts");
 
-/// Browser automation engine that runs embedded Python scripts
+/// Browser automation engine that runs embedded Python projects
 pub struct BrowserEngine {
     message_sender: mpsc::UnboundedSender<AppMessage>,
 }
@@ -22,55 +23,101 @@ impl BrowserEngine {
         Self { message_sender }
     }
 
-    /// Run the embedded Python automation script
+    /// Run the embedded Python automation project
     pub async fn run_automation(
         &self,
         fields: Vec<FormField>,
         credentials: Credentials,
         website_config: WebsiteConfig,
     ) -> Result<()> {
-        self.log_progress("Starting embedded Python automation...")
+        self.log_progress("🚀 Starting embedded Python automation project...")
             .await;
 
-        // Create a temporary file for the Python script
-        let temp_script_path = self.create_temp_script().await?;
+        // Extract the entire Python project to a temporary directory
+        let temp_project_dir = self.extract_python_project().await?;
 
-        // Run the Python script with your form data
+        // Run the main automation script
         let result = self
-            .execute_python_script(&temp_script_path, fields, credentials, website_config)
+            .execute_python_project(&temp_project_dir, fields, credentials, website_config)
             .await;
 
-        // Clean up the temporary file
-        let _ = fs::remove_file(&temp_script_path).await;
+        // Clean up the temporary directory
+        let _ = fs::remove_dir_all(&temp_project_dir).await;
 
         result
     }
 
-    /// Create temporary Python script file from embedded content
-    async fn create_temp_script(&self) -> Result<std::path::PathBuf> {
+    /// Extract the embedded Python project to a temporary directory
+    async fn extract_python_project(&self) -> Result<std::path::PathBuf> {
         use std::env;
 
         let temp_dir = env::temp_dir();
-        let script_path = temp_dir.join("automation_script.py");
+        let project_dir = temp_dir.join(format!("automation_project_{}", std::process::id()));
 
-        fs::write(&script_path, PYTHON_AUTOMATION_SCRIPT)
-            .await
-            .context("Failed to write temporary Python script")?;
+        self.log_progress("📦 Extracting embedded Python project...")
+            .await;
 
-        self.log_progress("Created temporary Python script").await;
-        Ok(script_path)
+        // Recursively extract all files and directories
+        Self::extract_dir_recursive_impl(&PYTHON_PROJECT, &project_dir).await?;
+
+        self.log_progress(format!(
+            "✅ Python project extracted to: {}",
+            project_dir.display()
+        ))
+        .await;
+        Ok(project_dir)
     }
 
-    /// Execute the Python script and capture output in real-time
-    async fn execute_python_script(
+    /// Recursively extract a directory structure - static method to avoid self reference issues
+    async fn extract_dir_recursive_impl(
+        dir: &Dir<'_>,
+        target_path: &std::path::Path,
+    ) -> Result<()> {
+        // Create the target directory
+        fs::create_dir_all(target_path)
+            .await
+            .context("Failed to create directory")?;
+
+        // Extract all files in this directory
+        for file in dir.files() {
+            let file_path = target_path.join(file.path());
+            if let Some(parent) = file_path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            fs::write(&file_path, file.contents())
+                .await
+                .context(format!("Failed to write file: {}", file_path.display()))?;
+
+            // Make Python files executable on Unix systems
+            #[cfg(unix)]
+            {
+                if file_path.extension().and_then(|s| s.to_str()) == Some("py") {
+                    use std::os::unix::fs::PermissionsExt;
+                    let mut perms = fs::metadata(&file_path).await?.permissions();
+                    perms.set_mode(0o755);
+                    fs::set_permissions(&file_path, perms).await?;
+                }
+            }
+        }
+
+        // Recursively extract subdirectories using Box::pin for async recursion
+        for subdir in dir.dirs() {
+            let subdir_path = target_path.join(subdir.path());
+            Box::pin(Self::extract_dir_recursive_impl(subdir, &subdir_path)).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Execute the main Python script from the extracted project
+    async fn execute_python_project(
         &self,
-        script_path: &std::path::Path,
+        project_dir: &std::path::Path,
         fields: Vec<FormField>,
         credentials: Credentials,
         website_config: WebsiteConfig,
     ) -> Result<()> {
-        self.log_progress("Preparing Python automation data...")
-            .await;
+        self.log_progress("📋 Preparing automation data...").await;
 
         // Prepare the data to send to Python
         let automation_data = AutomationData {
@@ -82,17 +129,38 @@ impl BrowserEngine {
         let data_json = serde_json::to_string(&automation_data)
             .context("Failed to serialize automation data")?;
 
-        self.log_progress("Launching Python process...").await;
+        self.log_progress("🐍 Launching Python automation...").await;
 
-        // Spawn Python process
+        // Find the main script (automation_script.py or main.py)
+        let main_script = project_dir.join("automation_script.py");
+        let alt_script = project_dir.join("main.py");
+
+        let script_path = if main_script.exists() {
+            main_script
+        } else if alt_script.exists() {
+            alt_script
+        } else {
+            return Err(anyhow::anyhow!(
+                "No main script found (automation_script.py or main.py)"
+            ));
+        };
+
+        self.log_progress(format!(
+            "📄 Running: {}",
+            script_path.file_name().unwrap().to_string_lossy()
+        ))
+        .await;
+
+        // Spawn Python process with the project directory as working directory
         let mut child = Command::new("python3")
-            .arg(script_path)
+            .arg(&script_path)
             .arg("--json-input")
+            .current_dir(project_dir) // Important: Set working directory for imports
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .context("Failed to spawn Python process")?;
+            .context("Failed to spawn Python process. Make sure python3 is installed.")?;
 
         // Send data to Python via stdin
         if let Some(mut stdin) = child.stdin.take() {
@@ -148,6 +216,29 @@ impl BrowserEngine {
         Ok(())
     }
 
+    /// Test Python integration with embedded project
+    pub async fn test_python_integration(&self) -> Result<()> {
+        self.log_progress("🧪 Starting Python integration test...")
+            .await;
+
+        // Create minimal test data
+        let test_fields = vec![
+            FormField::new("Test Field", "#test", crate::models::FieldType::Text)
+                .with_value("Integration Test Value"),
+        ];
+
+        let test_credentials = Credentials {
+            username: "test_user".to_string(),
+            password: "test_password".to_string(),
+        };
+
+        let test_website_config = WebsiteConfig::default();
+
+        // Run automation with test data
+        self.run_automation(test_fields, test_credentials, test_website_config)
+            .await
+    }
+
     /// Process Python stdout and parse special message formats
     async fn process_python_output(
         stdout: tokio::process::ChildStdout,
@@ -157,10 +248,8 @@ impl BrowserEngine {
         let mut lines = reader.lines();
 
         while let Ok(Some(line)) = lines.next_line().await {
-            // Parse different message formats from your Python script
-            if let Some(message) = Self::parse_python_message(&line) {
-                let _ = sender.send(message);
-            } else if line.starts_with("PROGRESS:") {
+            // Parse different message formats from Python script
+            if line.starts_with("PROGRESS:") {
                 let msg = line.strip_prefix("PROGRESS:").unwrap_or(&line).trim();
                 let _ = sender.send(AppMessage::AutomationProgress(msg.to_string()));
             } else if line.starts_with("ERROR:") {
@@ -201,25 +290,6 @@ impl BrowserEngine {
         }
     }
 
-    /// Parse structured JSON messages from Python (optional advanced format)
-    fn parse_python_message(line: &str) -> Option<AppMessage> {
-        // Try to parse as JSON message first
-        if let Ok(msg) = serde_json::from_str::<PythonMessage>(line) {
-            match msg.msg_type.as_str() {
-                "progress" => Some(AppMessage::AutomationProgress(msg.content)),
-                "complete" => Some(AppMessage::AutomationComplete),
-                "error" => Some(AppMessage::Log(LogLevel::Error, msg.content)),
-                "success" => Some(AppMessage::Log(LogLevel::Success, msg.content)),
-                "info" => Some(AppMessage::Log(LogLevel::Info, msg.content)),
-                "debug" => Some(AppMessage::Log(LogLevel::Debug, msg.content)),
-                "warn" => Some(AppMessage::Log(LogLevel::Warn, msg.content)),
-                _ => Some(AppMessage::Log(LogLevel::Info, format!("🐍 {}", line))),
-            }
-        } else {
-            None
-        }
-    }
-
     /// Send a progress update to the UI
     async fn log_progress(&self, message: impl Into<String>) {
         let _ = self
@@ -238,37 +308,6 @@ impl BrowserEngine {
             .message_sender
             .send(AppMessage::AutomationFailed(error.into()));
     }
-
-    /// Test the actual automation script with dummy data
-    pub async fn test_real_automation_script(&self) -> Result<()> {
-        self.log_progress("Testing real automation script with dummy data...")
-            .await;
-
-        // Create test data that matches your form structure
-        let test_fields = vec![
-            FormField::new("Project Name", "#project_name", FieldType::Text)
-                .with_value("TEST: Integration Test"),
-            FormField::new("Department", "#department", FieldType::Select)
-                .with_value("Engineering"),
-            FormField::new("Priority Level", "#priority", FieldType::Select).with_value("Medium"),
-            FormField::new("Description", "#description", FieldType::Textarea).with_value(
-                "This is a test of the Python integration. All logging should appear in the TUI.",
-            ),
-            FormField::new("Contact Email", "#contact_email", FieldType::Email)
-                .with_value("test@example.com"),
-        ];
-
-        let test_credentials = Credentials {
-            username: "test_user".to_string(),
-            password: "test_password".to_string(),
-        };
-
-        let test_website_config = WebsiteConfig::default();
-
-        // Run the actual automation script with test data
-        self.run_automation(test_fields, test_credentials, test_website_config)
-            .await
-    }
 }
 
 /// Data structure to send to Python script
@@ -277,14 +316,6 @@ struct AutomationData {
     fields: Vec<FormField>,
     credentials: Credentials,
     website_config: WebsiteConfig,
-}
-
-/// Structure for JSON communication with Python script (optional)
-#[derive(serde::Deserialize)]
-struct PythonMessage {
-    msg_type: String, // "progress", "error", "success", "complete", etc.
-    content: String,
-    timestamp: Option<String>,
 }
 
 // Implement Serialize for Credentials to send to Python

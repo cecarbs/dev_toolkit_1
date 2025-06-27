@@ -2390,7 +2390,7 @@ impl App {
         tokio::spawn(async move {
             let browser_engine = BrowserEngine::new(sender.clone());
 
-            if let Err(e) = browser_engine.test_real_automation_script().await {
+            if let Err(e) = browser_engine.test_python_integration().await {
                 let _ = sender.send(AppMessage::Log(
                     LogLevel::Error,
                     format!("Real automation test failed: {}", e),
